@@ -12,12 +12,11 @@ def submit_kc():
     kc_db[kc_id] = data
     return jsonify({"status": "received", "kc_id": kc_id})
 
-@app.route('/analyze-response', methods=['POST'])
-def analyze_response():
-    data = request.json
-    kc_id = data["kc_id"]
-    student_id = data["student_id"]
-    response_text = data["student_response"]
+@app.route("/submit_kc", methods=["POST"])
+def submit_kc():
+    data = request.get_json()
+    print(data)
+    return jsonify({"status": "success"})
 
     if "meaning" in response_text.lower():
         solo_level = "Relational"
