@@ -70,3 +70,7 @@ def generate_reaction():
             "feasibility_notes": f"Weather: {weather}, Location accessible"
         }
     })
+
+@app.route("/", methods=["GET"])
+def index():
+    return jsonify({"status": "success", "message": "Backend is live!"})
