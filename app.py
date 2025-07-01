@@ -8,11 +8,8 @@ kc_db = {}
 student_db = {}
 
 @app.route("/", methods=["GET"])
-def index():
-    return jsonify({
-        "status": "success",
-        "message": "Backend is live!"
-    })
+def home():
+    return jsonify({"status": "success", "message": "Backend is live!"})
 
 @app.route("/submit_kc", methods=["POST"])
 def submit_kc():
