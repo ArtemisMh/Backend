@@ -57,5 +57,35 @@ def analyze_response():
         "misconceptions": "None"
     })
 
+@app.route('/generate-reaction', methods=['POST'])
+def generate_reaction():
+    data = request.get_json()
+
+    student_id = data.get("student_id")
+    kc_id = data.get("kc_id")
+    solo_level = data.get("solo_level")
+    location = data.get("location")
+    weather = data.get("weather")
+    time_of_day = data.get("time_of_day")
+
+    # Example logic (you can make this smarter later)
+    if solo_level == "Uni-structural":
+        prompt = "Look again at the stained glass. What colors do you see, and what do they make you feel?"
+        improved = "The colors in the window create a peaceful feeling that might represent heaven."
+    elif solo_level == "Multi-structural":
+        prompt = "How do all these features work together to create a spiritual experience?"
+        improved = "The tall windows and colored light work together to create a feeling of transcendence."
+    else:
+        prompt = "Compare the use of light in this cathedral with another place you've visited."
+        improved = "This cathedral uses light to elevate visitors emotionally, while modern churches use simplicity."
+
+    return jsonify({
+        "student_id": student_id,
+        "kc_id": kc_id,
+        "reflective_prompt": prompt,
+        "improved_response_model": improved,
+        "educator_summary": f"Student is at {solo_level} level for {kc_id}. Prompt and model answer provided."
+    })
+
 if __name__ == "__main__":
     app.run(debug=True)
