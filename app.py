@@ -5,18 +5,18 @@ app = Flask(__name__)
 kc_db = {}
 student_db = {}
 
-@app.route('/submit-kc', methods=['POST'])
-def submit_kc():
-    data = request.json
-    kc_id = data.get("kc_id")
-    kc_db[kc_id] = data
-    return jsonify({"status": "received", "kc_id": kc_id})
-
 @app.route("/submit_kc", methods=["POST"])
 def submit_kc():
     data = request.get_json()
     print(data)
     return jsonify({"status": "success"})
+
+@app.route('/analyze-response', methods=['POST'])
+def analyze_response():
+    data = request.json
+    kc_id = data["kc_id"]
+    student_id = data["student_id"]
+    response_text = data["student_response"]
 
     if "meaning" in response_text.lower():
         solo_level = "Relational"
