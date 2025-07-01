@@ -1,63 +1,56 @@
 from flask import Flask, request, jsonify
-from datetime import datetime
 
 app = Flask(__name__)
 
-# Simulated in-memory storage
-kc_db = {}
-student_db = {}
 
+# Root route — for health check
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"status": "success", "message": "Backend is live!"})
 
+
+# Route for Learning Design GPT — receives a knowledge component (KC)
 @app.route("/submit_kc", methods=["POST"])
 def submit_kc():
     data = request.get_json()
+    print("KC submitted:", data)
+    return jsonify({"status": "success", "message": "Knowledge component received"}), 200
 
-    if not data or "kc_id" not in data:
-        return jsonify({"status": "error", "message": "Invalid KC submission"}), 400
 
-    kc_db[data["kc_id"]] = data
-    return jsonify({
-        "status": "success",
-        "received": data,
-        "note": "Knowledge Component stored successfully."
-    })
-
+# Route for Analyze Layer GPT — classifies SOLO level of a student response
 @app.route("/analyze-response", methods=["POST"])
 def analyze_response():
     data = request.get_json()
+
     kc_id = data.get("kc_id")
     student_id = data.get("student_id")
-    response_text = data.get("student_response", "")
+    response_text = data.get("student_response", "").lower()
 
-    # Basic logic to assign SOLO level (example logic)
-    if "meaning" in response_text.lower():
+    # Simple SOLO-level logic
+    if "meaning" in response_text or "symbol" in response_text:
         solo_level = "Relational"
-        justification = "Shows symbolic reasoning"
-    elif "red" in response_text.lower() or "blue" in response_text.lower():
+        justification = "Student connects elements to symbolic interpretation."
+    elif any(word in response_text for word in ["red", "blue", "window", "light"]):
         solo_level = "Multi-structural"
-        justification = "Mentions multiple elements"
-    else:
+        justification = "Student lists multiple relevant features."
+    elif len(response_text.strip()) > 0:
         solo_level = "Uni-structural"
-        justification = "Single aspect only"
-
-    student_db[student_id] = {
-        "kc_id": kc_id,
-        "solo_level": solo_level,
-        "timestamp": datetime.now().isoformat()
-    }
+        justification = "Student mentions one relevant detail."
+    else:
+        solo_level = "Pre-structural"
+        justification = "Student response is incomplete or off-topic."
 
     return jsonify({
         "kc_id": kc_id,
         "student_id": student_id,
         "SOLO_level": solo_level,
         "justification": justification,
-        "misconceptions": "None"
+        "misconceptions": None
     })
 
-@app.route('/generate-reaction', methods=['POST'])
+
+# Route for React Layer GPT — returns a next-step task or reflection based on context
+@app.route("/generate-reaction", methods=["POST"])
 def generate_reaction():
     data = request.get_json()
 
@@ -68,24 +61,26 @@ def generate_reaction():
     weather = data.get("weather")
     time_of_day = data.get("time_of_day")
 
-    # Example logic (you can make this smarter later)
     if solo_level == "Uni-structural":
         prompt = "Look again at the stained glass. What colors do you see, and what do they make you feel?"
-        improved = "The colors in the window create a peaceful feeling that might represent heaven."
+        improved = "The window’s blue and red colors may symbolize heaven and sacrifice."
     elif solo_level == "Multi-structural":
-        prompt = "How do all these features work together to create a spiritual experience?"
-        improved = "The tall windows and colored light work together to create a feeling of transcendence."
+        prompt = "How do the arches, windows, and ceiling shape your experience together?"
+        improved = "The arches and high ceiling help lift the viewer's gaze upward, creating a spiritual feeling."
+    elif solo_level == "Relational":
+        prompt = "What symbolic purpose do these features serve together?"
+        improved = "The light, arches, and windows together represent a connection between earth and heaven."
     else:
-        prompt = "Compare the use of light in this cathedral with another place you've visited."
-        improved = "This cathedral uses light to elevate visitors emotionally, while modern churches use simplicity."
+        prompt = "Compare how this cathedral uses light with another sacred space you’ve seen."
+        improved = "Gothic cathedrals use verticality and light for spiritual symbolism; modern architecture uses minimalism."
 
     return jsonify({
         "student_id": student_id,
         "kc_id": kc_id,
         "reflective_prompt": prompt,
         "improved_response_model": improved,
-        "educator_summary": f"Student is at {solo_level} level for {kc_id}. Prompt and model answer provided."
+        "educator_summary": f"Student is at {solo_level} level for {kc_id}. Reflective guidance provided."
     })
 
-if __name__ == "__main__":
-    app.run(debug=True)
+#if __name__ == "__main__":
+#    app.run(debug=True)
