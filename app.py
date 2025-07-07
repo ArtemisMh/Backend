@@ -13,8 +13,31 @@ def home():
 @app.route("/submit_kc", methods=["POST"])
 def submit_kc():
     data = request.get_json()
-    print("KC submitted:", data)
-    return jsonify({"status": "success", "message": "Knowledge component received"}), 200
+    kc_id = data.get("kc_id")
+    if not kc_id:
+        return jsonify({"status": "error", "message": "kc_id is required"}), 400
+
+    kc_store[kc_id] = data
+    print(f"KC stored: {kc_id}")
+    return jsonify({"status": "success", "message": f"Knowledge component {kc_id} received"}), 200
+
+# New: Route to fetch KC metadata from backend
+@app.route("/get_kc", methods=["GET"])
+def get_kc():
+    kc_id = request.args.get("kc_id")
+    if not kc_id:
+        return jsonify({"error": "kc_id parameter is required"}), 400
+
+    kc_data = kc_store.get(kc_id)
+    if not kc_data:
+        return jsonify({"error": f"KC with ID {kc_id} not found"}), 404
+
+    # Return only key metadata fields
+    return jsonify({
+        "kc_id": kc_data.get("kc_id"),
+        "title": kc_data.get("title"),
+        "target_SOLO_level": kc_data.get("target_SOLO_level")
+    }), 200
 
 
 # Route for Analyze Layer GPT — classifies SOLO level of a student response
@@ -43,7 +66,7 @@ def analyze_response():
     return jsonify({
         "kc_id": kc_id,
         "student_id": student_id,
-        "SOLO_level": solo_level,
+        "SOLO_level": solo_level, #student's current SOLO level
         "justification": justification,
         "misconceptions": None
     })
