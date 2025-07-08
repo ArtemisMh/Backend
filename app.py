@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
+kc_store = {}
 
 # Root route — for health check
 @app.route("/", methods=["GET"])
