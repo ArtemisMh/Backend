@@ -15,12 +15,20 @@ def home():
 def submit_kc():
     data = request.get_json()
     kc_id = data.get("kc_id")
+
     if not kc_id:
-        return jsonify({"status": "error", "message": "kc_id is required"}), 400
+        # Fallback auto-ID if GPT didn’t provide it
+        kc_id = f"KC_{str(uuid.uuid4())[:8]}"
+        data["kc_id"] = kc_id
 
     kc_store[kc_id] = data
     print(f"KC stored: {kc_id}")
-    return jsonify({"status": "success", "message": f"Knowledge component {kc_id} received"}), 200
+    return jsonify({
+        "status": "success",
+        "message": f"Knowledge component {kc_id} received",
+        "kc": data
+    }), 200
+
 
 # New: Route to fetch KC metadata from backend
 @app.route("/get_kc", methods=["GET"])
