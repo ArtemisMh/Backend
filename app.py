@@ -1,7 +1,7 @@
 import uuid
 import requests
 from flask import Flask, request, jsonify
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 
 
 app = Flask(__name__)
@@ -12,23 +12,6 @@ student_history = []
 # Replace with your actual Google API key
 GOOGLE_API_KEY = "YOUR_GOOGLE_API_KEY"
 
-# Utility: Get local time and timezone from lat/lng using Google Time Zone API
-def get_local_time(lat, lng):
-    utc_now = datetime.utcnow()
-    timestamp = int(utc_now.timestamp())
-
-    tz_response = requests.get("https://maps.googleapis.com/maps/api/timezone/json", params={
-        "location": f"{lat},{lng}",
-        "timestamp": timestamp,
-        "key": GOOGLE_API_KEY
-    }).json()
-
-    if tz_response["status"] != "OK":
-        raise Exception("Could not fetch time zone info")
-
-    offset_sec = tz_response["dstOffset"] + tz_response["rawOffset"]
-    local_time = utc_now + timedelta(seconds=offset_sec)
-    return local_time.isoformat(), tz_response["timeZoneId"]
 
 # Root route — for health check
 @app.route("/", methods=["GET"])
@@ -131,41 +114,43 @@ def store_history():
 
     location_str = data["location"]
     try:
-        # Step 1: Convert city+country to coordinates
-        geo_response = requests.get("https://maps.googleapis.com/maps/api/geocode/json", params={
+        # Step 1: Get coordinates from location
+        geo = requests.get("https://maps.googleapis.com/maps/api/geocode/json", params={
             "address": location_str,
             "key": GOOGLE_API_KEY
         }).json()
-        if not geo_response["results"]:
-            raise Exception("Geocoding failed")
-        loc = geo_response["results"][0]["geometry"]["location"]
+        if not geo["results"]:
+            raise Exception("Location not found.")
+        loc = geo["results"][0]["geometry"]["location"]
         lat, lng = loc["lat"], loc["lng"]
 
-        # Step 2: Use coordinates to fetch timezone info
+        # Step 2: Get timezone info
         utc_now = datetime.utcnow()
         timestamp_sec = int(utc_now.timestamp())
-        tz_response = requests.get("https://maps.googleapis.com/maps/api/timezone/json", params={
+        tz = requests.get("https://maps.googleapis.com/maps/api/timezone/json", params={
             "location": f"{lat},{lng}",
             "timestamp": timestamp_sec,
             "key": GOOGLE_API_KEY
         }).json()
-        if tz_response["status"] != "OK":
-            raise Exception("Timezone lookup failed")
+        if tz["status"] != "OK":
+            raise Exception("Timezone lookup failed.")
 
-        offset_seconds = tz_response["rawOffset"] + tz_response["dstOffset"]
-        local_time = utc_now + timedelta(seconds=offset_seconds)
-        timestamp_local = local_time.isoformat()
-        timezone_id = tz_response["timeZoneId"]
+        offset = tz["rawOffset"] + tz["dstOffset"]
+        local_time = utc_now + timedelta(seconds=offset)
+
+        # Format timestamp to ISO 8601 with colon in offset
+        timestamp_local = local_time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        timestamp_local = timestamp_local[:-2] + ":" + timestamp_local[-2:]
+        timezone_id = tz["timeZoneId"]
         timezone_label = f"{timezone_id} (CEST)" if "Europe/Madrid" in timezone_id else timezone_id
 
-        # Save full record
         record = {
             **data,
             "timestamp": timestamp_local,
             "timezone": timezone_label
         }
-        student_history.append(record)
 
+        student_history.append(record)
         return jsonify({
             "status": "success",
             "message": "Student assessment history stored.",
@@ -177,7 +162,6 @@ def store_history():
             "status": "error",
             "message": f"Could not process location/time: {str(e)}"
         }), 500
-
 
 # Route for React Layer GPT — returns a next-step task or reflection based on context
 @app.route("/generate-reaction", methods=["POST"])
