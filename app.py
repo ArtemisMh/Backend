@@ -97,7 +97,8 @@ def store_history():
     data = request.get_json()
 
     required_fields = ["kc_id", "student_id", "student_response", "SOLO_level",
-                       "target_SOLO_level", "justification", "misconceptions", "timestamp"]
+                       "target_SOLO_level", "justification", "misconceptions",
+                       "timestamp", "location"]
 
     missing = [field for field in required_fields if field not in data]
     if missing:
