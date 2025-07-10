@@ -1,8 +1,10 @@
 from flask import Flask, request, jsonify
+from datetime import datetime
 
 app = Flask(__name__)
 
 kc_store = {}
+student_history = []
 
 # Root route — for health check
 @app.route("/", methods=["GET"])
@@ -39,7 +41,7 @@ def submit_kc():
     }), 200
 
 
-# New: Route to fetch KC metadata from backend
+# New: Route to fetch KC metadata from backend (shared across Analyze/React)
 @app.route("/get_kc", methods=["GET"])
 def get_kc():
     kc_id = request.args.get("kc_id")
@@ -89,6 +91,27 @@ def analyze_response():
         "misconceptions": None
     })
 
+# In-memory storage for historical assessment data (follow-up to analyze)
+@app.route("/store-history", methods=["POST"])
+def store_history():
+    data = request.get_json()
+
+    required_fields = ["kc_id", "student_id", "student_response", "SOLO_level",
+                       "target_SOLO_level", "justification", "misconceptions", "timestamp"]
+
+    missing = [field for field in required_fields if field not in data]
+    if missing:
+        return jsonify({
+            "status": "error",
+            "message": f"Missing fields: {', '.join(missing)}"
+        }), 400
+
+    student_history.append(data)
+    return jsonify({
+        "status": "success",
+        "message": "Student assessment history stored.",
+        "record": data
+    }), 200
 
 # Route for React Layer GPT — returns a next-step task or reflection based on context
 @app.route("/generate-reaction", methods=["POST"])
