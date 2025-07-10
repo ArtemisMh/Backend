@@ -1,16 +1,38 @@
 from flask import Flask, request, jsonify
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+import uuid
+import requests
 
 app = Flask(__name__)
 
 kc_store = {}
 student_history = []
 
+# Replace with your actual Google API key
+GOOGLE_API_KEY = "YOUR_GOOGLE_API_KEY"
+
+# Utility: Get local time and timezone from lat/lng using Google Time Zone API
+def get_local_time(lat, lng):
+    utc_now = datetime.utcnow()
+    timestamp = int(utc_now.timestamp())
+
+    tz_response = requests.get("https://maps.googleapis.com/maps/api/timezone/json", params={
+        "location": f"{lat},{lng}",
+        "timestamp": timestamp,
+        "key": GOOGLE_API_KEY
+    }).json()
+
+    if tz_response["status"] != "OK":
+        raise Exception("Could not fetch time zone info")
+
+    offset_sec = tz_response["dstOffset"] + tz_response["rawOffset"]
+    local_time = utc_now + timedelta(seconds=offset_sec)
+    return local_time.isoformat(), tz_response["timeZoneId"]
+
 # Root route — for health check
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"status": "success", "message": "Backend is live!"})
-
 
 # Route for Learning Design GPT — receives a knowledge component (KC)
 # Checks for "approved": true in the incoming JSON. Rejects the request with status 400 if approval is missing. Auto-generates a kc_id if not provided (as fallback). Stores the KC into kc_store only after validation.
@@ -69,13 +91,12 @@ def analyze_response():
     student_id = data.get("student_id")
     response_text = data.get("student_response", "").lower()
 
-    # Simple SOLO-level logic
-    if "meaning" in response_text or "symbol" in response_text:
+    if "unify" in response_text or "control" in response_text:
         solo_level = "Relational"
-        justification = "Student connects elements to symbolic interpretation."
-    elif any(word in response_text for word in ["red", "blue", "window", "light"]):
+        justification = "Student explains how expelling groups resulted in unified control."
+    elif "byzantine" in response_text or "suebi" in response_text:
         solo_level = "Multi-structural"
-        justification = "Student lists multiple relevant features."
+        justification = "Student lists multiple expelled groups but lacks explanation."
     elif len(response_text.strip()) > 0:
         solo_level = "Uni-structural"
         justification = "Student mentions one relevant detail."
@@ -86,7 +107,7 @@ def analyze_response():
     return jsonify({
         "kc_id": kc_id,
         "student_id": student_id,
-        "SOLO_level": solo_level, #student's current SOLO level
+        "SOLO_level": solo_level,
         "justification": justification,
         "misconceptions": None
     })
@@ -95,10 +116,9 @@ def analyze_response():
 @app.route("/store-history", methods=["POST"])
 def store_history():
     data = request.get_json()
-
     required_fields = ["kc_id", "student_id", "student_response", "SOLO_level",
                        "target_SOLO_level", "justification", "misconceptions",
-                       "timestamp", "location"]
+                       "latitude", "longitude"]
 
     missing = [field for field in required_fields if field not in data]
     if missing:
@@ -107,12 +127,37 @@ def store_history():
             "message": f"Missing fields: {', '.join(missing)}"
         }), 400
 
-    student_history.append(data)
+    try:
+        timestamp, timezone_id = get_local_time(data["latitude"], data["longitude"])
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Time zone conversion failed: {str(e)}"
+        }), 500
+
+    history_record = {
+        "kc_id": data["kc_id"],
+        "student_id": data["student_id"],
+        "student_response": data["student_response"],
+        "SOLO_level": data["SOLO_level"],
+        "target_SOLO_level": data["target_SOLO_level"],
+        "justification": data["justification"],
+        "misconceptions": data["misconceptions"],
+        "timestamp": timestamp,
+        "timezone": timezone_id,
+        "location": {
+            "latitude": data["latitude"],
+            "longitude": data["longitude"]
+        }
+    }
+
+    student_history.append(history_record)
     return jsonify({
         "status": "success",
         "message": "Student assessment history stored.",
-        "record": data
+        "record": history_record
     }), 200
+
 
 # Route for React Layer GPT — returns a next-step task or reflection based on context
 @app.route("/generate-reaction", methods=["POST"])
