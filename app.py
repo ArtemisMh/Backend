@@ -11,13 +11,22 @@ def home():
 
 
 # Route for Learning Design GPT — receives a knowledge component (KC)
+# Checks for "approved": true in the incoming JSON. Rejects the request with status 400 if approval is missing. Auto-generates a kc_id if not provided (as fallback). Stores the KC into kc_store only after validation.
 @app.route("/submit_kc", methods=["POST"])
 def submit_kc():
     data = request.get_json()
     kc_id = data.get("kc_id")
 
+    # Require teacher approval before storing
+    if not data.get("approved", False):
+        return jsonify({
+            "status": "error",
+            "message": "KC not submitted: approval required. Please set 'approved': true in the payload."
+        }), 400
+
+    # Fallback auto-ID if GPT didn’t provide it
     if not kc_id:
-        # Fallback auto-ID if GPT didn’t provide it
+        import uuid
         kc_id = f"KC_{str(uuid.uuid4())[:8]}"
         data["kc_id"] = kc_id
 
