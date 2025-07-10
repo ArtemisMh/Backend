@@ -131,7 +131,7 @@ def store_history():
 
     location_str = data["location"]
     try:
-        # Step 1: Convert location string to coordinates
+        # Step 1: Convert city+country to coordinates
         geo_response = requests.get("https://maps.googleapis.com/maps/api/geocode/json", params={
             "address": location_str,
             "key": GOOGLE_API_KEY
@@ -141,7 +141,7 @@ def store_history():
         loc = geo_response["results"][0]["geometry"]["location"]
         lat, lng = loc["lat"], loc["lng"]
 
-        # Step 2: Get timezone from Google Time Zone API
+        # Step 2: Use coordinates to fetch timezone info
         utc_now = datetime.utcnow()
         timestamp_sec = int(utc_now.timestamp())
         tz_response = requests.get("https://maps.googleapis.com/maps/api/timezone/json", params={
@@ -152,19 +152,20 @@ def store_history():
         if tz_response["status"] != "OK":
             raise Exception("Timezone lookup failed")
 
-        offset = tz_response["rawOffset"] + tz_response["dstOffset"]
-        local_time = utc_now + timedelta(seconds=offset)
-        iso_timestamp = local_time.isoformat()
+        offset_seconds = tz_response["rawOffset"] + tz_response["dstOffset"]
+        local_time = utc_now + timedelta(seconds=offset_seconds)
+        timestamp_local = local_time.isoformat()
         timezone_id = tz_response["timeZoneId"]
+        timezone_label = f"{timezone_id} (CEST)" if "Europe/Madrid" in timezone_id else timezone_id
 
-        # Store all data including timestamp and timezone
+        # Save full record
         record = {
             **data,
-            "timestamp": iso_timestamp,
-            "timezone": timezone_id
+            "timestamp": timestamp_local,
+            "timezone": timezone_label
         }
-
         student_history.append(record)
+
         return jsonify({
             "status": "success",
             "message": "Student assessment history stored.",
@@ -174,7 +175,7 @@ def store_history():
     except Exception as e:
         return jsonify({
             "status": "error",
-            "message": f"Could not process location or time: {str(e)}"
+            "message": f"Could not process location/time: {str(e)}"
         }), 500
 
 
