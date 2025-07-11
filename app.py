@@ -14,7 +14,7 @@ student_history = []
 
 # Secure keys from environment variables
 OPENCAGE_API_KEY = os.getenv("OPENCAGE_API_KEY")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")  # Only for timezone lookup
+#GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")  # Only for timezone lookup
 
 
 # Root route — for health check
@@ -145,17 +145,10 @@ def store_history():
             lat = geo["results"][0]["geometry"]["lat"]
             lng = geo["results"][0]["geometry"]["lng"]
 
-        # Use Google Time Zone API for local time
-        timestamp_sec = int(datetime.utcnow().timestamp())
-        tz = requests.get("https://maps.googleapis.com/maps/api/timezone/json", params={
-            "location": f"{lat},{lng}",
-            "timestamp": timestamp_sec,
-            "key": GOOGLE_API_KEY
-        }).json()
-        if tz["status"] != "OK":
-            raise Exception(f"Timezone lookup failed: {tz['status']}")
+        # Extract timezone info from OpenCage annotations
+        timezone_id = geo["results"][0]["annotations"]["timezone"]["name"]
 
-        timezone_id = tz["timeZoneId"]
+        # Convert to local time using zoneinfo
         local_time = datetime.now(ZoneInfo(timezone_id))
         timestamp_local = local_time.strftime("%Y-%m-%dT%H:%M:%S")
         timezone_label = timezone_id
