@@ -9,13 +9,13 @@ import os
 
 app = Flask(__name__)
 
-kc_store = {}
-student_history = []
-
 # Secure keys from environment variables
 OPENCAGE_API_KEY = os.getenv("OPENCAGE_API_KEY")
+OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 #GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")  # Only for timezone lookup
 
+kc_store = {}
+student_history = []
 
 # Root route — for health check
 @app.route("/", methods=["GET"])
@@ -69,6 +69,7 @@ def get_kc():
         "target_SOLO_level": kc_data.get("target_SOLO_level")
     }), 200
 
+
 @app.route("/get-student-history", methods=["GET"])
 def get_student_history():
     student_id = request.args.get("student_id")
@@ -89,7 +90,6 @@ def get_student_history():
 @app.route("/analyze-response", methods=["POST"])
 def analyze_response():
     data = request.get_json()
-
     kc_id = data.get("kc_id")
     student_id = data.get("student_id")
     response_text = data.get("student_response", "").lower()
@@ -115,6 +115,77 @@ def analyze_response():
         "misconceptions": None
     })
 
+def get_weather(lat, lng):
+    try:
+        url = "https://api.openweathermap.org/data/2.5/weather"
+        response = requests.get(url, params={
+            "lat": lat,
+            "lon": lng,
+            "appid": OPENWEATHER_API_KEY,
+            "units": "metric"
+        })
+        data = response.json()
+        main = data["weather"][0]["main"].lower()
+        if "rain" in main:
+            return "rainy"
+        elif "clear" in main:
+            return "sunny"
+        elif "cloud" in main:
+            return "cloudy"
+        else:
+            return main
+    except:
+        return "unknown"
+
+# Route for React Layer GPT — returns a next-step task or reflection based on context
+@app.route("/generate-reaction", methods=["POST"])
+def generate_reaction():
+    data = request.get_json()
+
+    student_id = data.get("student_id")
+    kc_id = data.get("kc_id")
+    solo_level = data.get("SOLO_level")
+    location = data.get("location")
+
+    try:
+        lat, lng = [float(x.strip()) for x in location.split(",")]
+    except:
+        return jsonify({"error": "Invalid coordinates"}), 400
+
+    weather = get_weather(lat, lng)
+
+    if solo_level == "Uni-structural":
+        prompt = "What visual feature stands out to you at this site?"
+        improved = "The columns at the front seem symbolic and repetitive, indicating importance."
+    elif solo_level == "Multi-structural":
+        prompt = "How do the different visual or architectural elements relate?"
+        improved = "The columns and arches together lead the viewer’s eye upward toward the heavens."
+    else:
+        prompt = "What meaning is conveyed by the combination of materials and design?"
+        improved = "These structural elements are arranged to evoke awe, suggesting divine presence."
+
+    if weather == "rainy":
+        task_title = "Indoor Exploration"
+        task_description = "Due to rainy weather, explore a virtual 3D tour of a cathedral and reflect on how light and form are represented digitally."
+        notes = "Rain detected at student's location. Outdoor activity postponed."
+    else:
+        task_title = "On-Site Reflection"
+        task_description = "Observe the facade or entry of a nearby cathedral or historic building and photograph one detail that expresses spiritual symbolism."
+        notes = f"Weather is {weather}. Conditions suitable for outdoor observation."
+
+    return jsonify({
+        "student_id": student_id,
+        "kc_id": kc_id,
+        "reflective_prompt": prompt,
+        "improved_response_model": improved,
+        "educator_summary": f"SOLO level is {solo_level}. Reaction adapted to current weather.",
+        "contextual_task": {
+            "task_title": task_title,
+            "task_description": task_description,
+            "feasibility_notes": notes
+        }
+    })
+    
 # In-memory storage for historical assessment data (follow-up to analyze)
 @app.route("/store-history", methods=["POST"])
 def store_history():
@@ -187,40 +258,6 @@ def store_history():
             "status": "error",
             "message": f"Could not process location or time: {str(e)}"
         }), 500
-
-
-# Route for React Layer GPT — returns a next-step task or reflection based on context
-@app.route("/generate-reaction", methods=["POST"])
-def generate_reaction():
-    data = request.get_json()
-
-    student_id = data.get("student_id")
-    kc_id = data.get("kc_id")
-    solo_level = data.get("solo_level")
-    location = data.get("location")
-    weather = data.get("weather")
-    time_of_day = data.get("time_of_day")
-
-    if solo_level == "Uni-structural":
-        prompt = "Look again at the stained glass. What colors do you see, and what do they make you feel?"
-        improved = "The window’s blue and red colors may symbolize heaven and sacrifice."
-    elif solo_level == "Multi-structural":
-        prompt = "How do the arches, windows, and ceiling shape your experience together?"
-        improved = "The arches and high ceiling help lift the viewer's gaze upward, creating a spiritual feeling."
-    elif solo_level == "Relational":
-        prompt = "What symbolic purpose do these features serve together?"
-        improved = "The light, arches, and windows together represent a connection between earth and heaven."
-    else:
-        prompt = "Compare how this cathedral uses light with another sacred space you’ve seen."
-        improved = "Gothic cathedrals use verticality and light for spiritual symbolism; modern architecture uses minimalism."
-
-    return jsonify({
-        "student_id": student_id,
-        "kc_id": kc_id,
-        "reflective_prompt": prompt,
-        "improved_response_model": improved,
-        "educator_summary": f"Student is at {solo_level} level for {kc_id}. Reflective guidance provided."
-    })
 
 #if __name__ == "__main__":
 #    app.run(debug=True)
