@@ -4,7 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import uuid
 import requests
-import re
+import os
 
 
 app = Flask(__name__)
@@ -12,8 +12,9 @@ app = Flask(__name__)
 kc_store = {}
 student_history = []
 
-# Replace with your actual Google API key
-GOOGLE_API_KEY = "YOUR_GOOGLE_API_KEY"
+# Secure keys from environment variables
+OPENCAGE_API_KEY = os.getenv("OPENCAGE_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")  # Only for timezone lookup
 
 
 # Root route — for health check
@@ -115,38 +116,36 @@ def store_history():
             "message": f"Missing required fields: {', '.join(missing)}"
         }), 400
 
+    location_input = data["location"].strip().replace("\"", "").replace("'", "")
+    is_coord = False
+
     try:
-        location_input = data["location"].strip().replace("\"", "").replace("'", "")
+        lat, lng = [float(x.strip()) for x in location_input.split(",")]
+        is_coord = True
+    except:
         is_coord = False
 
-        try:
-            lat, lng = [float(x.strip()) for x in location_input.split(",")]
-            is_coord = True
-        except:
-            is_coord = False
-
+    try:
         if is_coord:
-            # Reverse geocoding for coordinates
-            geo = requests.get("https://maps.googleapis.com/maps/api/geocode/json", params={
-                "latlng": f"{lat},{lng}",
-                "key": GOOGLE_API_KEY
+            geo = requests.get("https://api.opencagedata.com/geocode/v1/json", params={
+                "q": f"{lat},{lng}",
+                "key": OPENCAGE_API_KEY
             }).json()
             if not geo["results"]:
-                raise Exception("Unable to resolve coordinates to a location.")
-            location_str = geo["results"][0]["formatted_address"]
+                raise Exception("Unable to reverse geocode coordinates.")
+            location_str = geo["results"][0]["formatted"]
         else:
-            # Geocoding from city name
-            geo = requests.get("https://maps.googleapis.com/maps/api/geocode/json", params={
-                "address": location_input,
-                "key": GOOGLE_API_KEY
+            geo = requests.get("https://api.opencagedata.com/geocode/v1/json", params={
+                "q": location_input,
+                "key": OPENCAGE_API_KEY
             }).json()
             if not geo["results"]:
-                raise Exception("Unable to resolve text location.")
-            loc = geo["results"][0]["geometry"]["location"]
-            lat, lng = loc["lat"], loc["lng"]
-            location_str = geo["results"][0]["formatted_address"]
+                raise Exception("Unable to geocode location string.")
+            location_str = geo["results"][0]["formatted"]
+            lat = geo["results"][0]["geometry"]["lat"]
+            lng = geo["results"][0]["geometry"]["lng"]
 
-        # Step 2: Get local time from timezone
+        # Use Google Time Zone API for local time
         timestamp_sec = int(datetime.utcnow().timestamp())
         tz = requests.get("https://maps.googleapis.com/maps/api/timezone/json", params={
             "location": f"{lat},{lng}",
@@ -154,12 +153,12 @@ def store_history():
             "key": GOOGLE_API_KEY
         }).json()
         if tz["status"] != "OK":
-            raise Exception("Timezone lookup failed.")
+            raise Exception(f"Timezone lookup failed: {tz['status']}")
 
         timezone_id = tz["timeZoneId"]
         local_time = datetime.now(ZoneInfo(timezone_id))
         timestamp_local = local_time.strftime("%Y-%m-%dT%H:%M:%S")
-        timezone_label = f"{timezone_id} (CEST)" if "Madrid" in timezone_id else timezone_id
+        timezone_label = timezone_id
 
         record = {
             **data,
