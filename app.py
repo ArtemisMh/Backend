@@ -1,9 +1,10 @@
 
 from flask import Flask, request, jsonify
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 import uuid
 import requests
+import re
 
 
 app = Flask(__name__)
@@ -114,19 +115,33 @@ def store_history():
             "message": f"Missing required fields: {', '.join(missing)}"
         }), 400
 
-    location_str = data["location"]
-    try:
-        # Step 1: Convert city/country to lat/lng
-        geo = requests.get("https://maps.googleapis.com/maps/api/geocode/json", params={
-            "address": location_str,
-            "key": GOOGLE_API_KEY
-        }).json()
-        if not geo["results"]:
-            raise Exception("Location not found.")
-        loc = geo["results"][0]["geometry"]["location"]
-        lat, lng = loc["lat"], loc["lng"]
+    location_input = data["location"].strip().replace("\"", "").replace("'", "")
+    is_coord = re.match(r"^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$", location_input)
 
-        # Step 2: Get timezone using coordinates
+    try:
+        # Step 1: Convert location to coordinates
+        if is_coord:
+            lat, lng = map(float, location_input.split(","))
+            # Reverse geocode to get city
+            geo = requests.get("https://maps.googleapis.com/maps/api/geocode/json", params={
+                "latlng": f"{lat},{lng}",
+                "key": GOOGLE_API_KEY
+            }).json()
+            if not geo["results"]:
+                raise Exception("Unable to resolve coordinates to city.")
+            location_str = geo["results"][0]["formatted_address"]
+        else:
+            geo = requests.get("https://maps.googleapis.com/maps/api/geocode/json", params={
+                "address": location_input,
+                "key": GOOGLE_API_KEY
+            }).json()
+            if not geo["results"]:
+                raise Exception("Unable to resolve text location.")
+            loc = geo["results"][0]["geometry"]["location"]
+            lat, lng = loc["lat"], loc["lng"]
+            location_str = geo["results"][0]["formatted_address"]
+
+        # Step 2: Timezone resolution
         timestamp_sec = int(datetime.utcnow().timestamp())
         tz = requests.get("https://maps.googleapis.com/maps/api/timezone/json", params={
             "location": f"{lat},{lng}",
@@ -143,6 +158,7 @@ def store_history():
 
         record = {
             **data,
+            "location": location_str,
             "timestamp": timestamp_local,
             "timezone": timezone_label
         }
@@ -157,7 +173,7 @@ def store_history():
     except Exception as e:
         return jsonify({
             "status": "error",
-            "message": f"Could not process location/time: {str(e)}"
+            "message": f"Could not process location or time: {str(e)}"
         }), 500
 
 # Route for React Layer GPT — returns a next-step task or reflection based on context
