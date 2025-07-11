@@ -115,22 +115,27 @@ def store_history():
             "message": f"Missing required fields: {', '.join(missing)}"
         }), 400
 
-    location_input = data["location"].strip().replace("\"", "").replace("'", "")
-    is_coord = re.match(r"^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$", location_input)
-
     try:
-        # Step 1: Convert location to coordinates
+        location_input = data["location"].strip().replace("\"", "").replace("'", "")
+        is_coord = False
+
+        try:
+            lat, lng = [float(x.strip()) for x in location_input.split(",")]
+            is_coord = True
+        except:
+            is_coord = False
+
         if is_coord:
-            lat, lng = map(float, location_input.split(","))
-            # Reverse geocode to get city
+            # Reverse geocoding for coordinates
             geo = requests.get("https://maps.googleapis.com/maps/api/geocode/json", params={
                 "latlng": f"{lat},{lng}",
                 "key": GOOGLE_API_KEY
             }).json()
             if not geo["results"]:
-                raise Exception("Unable to resolve coordinates to city.")
+                raise Exception("Unable to resolve coordinates to a location.")
             location_str = geo["results"][0]["formatted_address"]
         else:
+            # Geocoding from city name
             geo = requests.get("https://maps.googleapis.com/maps/api/geocode/json", params={
                 "address": location_input,
                 "key": GOOGLE_API_KEY
@@ -141,7 +146,7 @@ def store_history():
             lat, lng = loc["lat"], loc["lng"]
             location_str = geo["results"][0]["formatted_address"]
 
-        # Step 2: Timezone resolution
+        # Step 2: Get local time from timezone
         timestamp_sec = int(datetime.utcnow().timestamp())
         tz = requests.get("https://maps.googleapis.com/maps/api/timezone/json", params={
             "location": f"{lat},{lng}",
