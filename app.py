@@ -1,7 +1,9 @@
-import uuid
-import requests
+
 from flask import Flask, request, jsonify
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+import uuid
+import requests
 
 
 app = Flask(__name__)
@@ -75,12 +77,12 @@ def analyze_response():
     student_id = data.get("student_id")
     response_text = data.get("student_response", "").lower()
 
-    if "unify" in response_text or "control" in response_text:
+    if "meaning" in response_text or "symbol" in response_text:
         solo_level = "Relational"
-        justification = "Student explains how expelling groups resulted in unified control."
-    elif "byzantine" in response_text or "suebi" in response_text:
+        justification = "Student connects elements to symbolic interpretation."
+    elif any(word in response_text for word in ["red", "blue", "window", "light"]):
         solo_level = "Multi-structural"
-        justification = "Student lists multiple expelled groups but lacks explanation."
+        justification = "Student lists multiple relevant features."
     elif len(response_text.strip()) > 0:
         solo_level = "Uni-structural"
         justification = "Student mentions one relevant detail."
@@ -114,7 +116,7 @@ def store_history():
 
     location_str = data["location"]
     try:
-        # Step 1: Get coordinates from location
+        # Step 1: Convert city/country to lat/lng
         geo = requests.get("https://maps.googleapis.com/maps/api/geocode/json", params={
             "address": location_str,
             "key": GOOGLE_API_KEY
@@ -124,9 +126,8 @@ def store_history():
         loc = geo["results"][0]["geometry"]["location"]
         lat, lng = loc["lat"], loc["lng"]
 
-        # Step 2: Get timezone info
-        utc_now = datetime.utcnow()
-        timestamp_sec = int(utc_now.timestamp())
+        # Step 2: Get timezone using coordinates
+        timestamp_sec = int(datetime.utcnow().timestamp())
         tz = requests.get("https://maps.googleapis.com/maps/api/timezone/json", params={
             "location": f"{lat},{lng}",
             "timestamp": timestamp_sec,
@@ -135,14 +136,10 @@ def store_history():
         if tz["status"] != "OK":
             raise Exception("Timezone lookup failed.")
 
-        offset = tz["rawOffset"] + tz["dstOffset"]
-        local_time = utc_now + timedelta(seconds=offset)
-
-        # Format timestamp to ISO 8601 with colon in offset
-        timestamp_local = local_time.strftime("%Y-%m-%dT%H:%M:%S%z")
-        timestamp_local = timestamp_local[:-2] + ":" + timestamp_local[-2:]
         timezone_id = tz["timeZoneId"]
-        timezone_label = f"{timezone_id} (CEST)" if "Europe/Madrid" in timezone_id else timezone_id
+        local_time = datetime.now(ZoneInfo(timezone_id))
+        timestamp_local = local_time.strftime("%Y-%m-%dT%H:%M:%S")
+        timezone_label = f"{timezone_id} (CEST)" if "Madrid" in timezone_id else timezone_id
 
         record = {
             **data,
