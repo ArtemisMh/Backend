@@ -69,6 +69,21 @@ def get_kc():
         "target_SOLO_level": kc_data.get("target_SOLO_level")
     }), 200
 
+@app.route("/get-student-history", methods=["GET"])
+def get_student_history():
+    student_id = request.args.get("student_id")
+    kc_id = request.args.get("kc_id")
+
+    if not student_id:
+        return jsonify({"error": "student_id is required"}), 400
+
+    # Filter stored records
+    results = [r for r in student_history if r["student_id"] == student_id]
+
+    if kc_id:
+        results = [r for r in results if r["kc_id"] == kc_id]
+
+    return jsonify({"records": results}), 200
 
 # Route for Analyze Layer GPT — classifies SOLO level of a student response
 @app.route("/analyze-response", methods=["POST"])
@@ -172,6 +187,7 @@ def store_history():
             "status": "error",
             "message": f"Could not process location or time: {str(e)}"
         }), 500
+
 
 # Route for React Layer GPT — returns a next-step task or reflection based on context
 @app.route("/generate-reaction", methods=["POST"])
