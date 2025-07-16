@@ -122,20 +122,23 @@ def get_weather(lat, lng):
             "lat": lat,
             "lon": lng,
             "appid": OPENWEATHER_API_KEY,
-            "units": "metric"
+            #"units": "metric",
+            "units": "imperial"  # Fahrenheit
         })
         data = response.json()
         main = data["weather"][0]["main"].lower()
+        temp = data["main"]["temp"]
         if "rain" in main:
-            return "rainy"
+            condition = "rainy"
         elif "clear" in main:
-            return "sunny"
+            condition = "sunny"
         elif "cloud" in main:
-            return "cloudy"
+            condition = "cloudy"
         else:
-            return main
+            condition = main
+        return condition, temp
     except:
-        return "unknown"
+        return "unknown", None
 
 # Route for React Layer GPT — returns a next-step task or reflection based on context
 @app.route("/generate-reaction", methods=["POST"])
@@ -152,22 +155,27 @@ def generate_reaction():
     except:
         return jsonify({"error": "Invalid coordinates"}), 400
 
-    weather = get_weather(lat, lng)
+    weather, temp = get_weather(lat, lng)
 
-    if solo_level == "Uni-structural":
-        prompt = "What visual feature stands out to you at this site?"
-        improved = "The columns at the front seem symbolic and repetitive, indicating importance."
-    elif solo_level == "Multi-structural":
-        prompt = "How do the different visual or architectural elements relate?"
-        improved = "The columns and arches together lead the viewer’s eye upward toward the heavens."
-    else:
-        prompt = "What meaning is conveyed by the combination of materials and design?"
-        improved = "These structural elements are arranged to evoke awe, suggesting divine presence."
+    very_hot = temp is not None and temp > 96
 
-    if weather == "rainy":
+    # if solo_level == "Uni-structural":
+    #     prompt = "What visual feature stands out to you at this site?"
+    #     improved = "The columns at the front seem symbolic and repetitive, indicating importance."
+    # elif solo_level == "Multi-structural":
+    #     prompt = "How do the different visual or architectural elements relate?"
+    #     improved = "The columns and arches together lead the viewer’s eye upward toward the heavens."
+    # else:
+    #     prompt = "What meaning is conveyed by the combination of materials and design?"
+    #     improved = "These structural elements are arranged to evoke awe, suggesting divine presence."
+
+    prompt = None
+    improved = None
+
+    if weather == "rainy" or very_hot:
         task_title = "Indoor Exploration"
-        task_description = "Due to rainy weather, explore a virtual 3D tour of a cathedral and reflect on how light and form are represented digitally."
-        notes = "Rain detected at student's location. Outdoor activity postponed."
+        task_description = "Due to rainy weather or high temperature, explore a virtual 3D tour of a cathedral and reflect on how light and form are represented digitally."
+        notes = f"Weather: {weather}. Temperature: {temp}°F. Outdoor activity avoided."
     else:
         task_title = "On-Site Reflection"
         task_description = "Observe the facade or entry of a nearby cathedral or historic building and photograph one detail that expresses spiritual symbolism."
@@ -176,9 +184,11 @@ def generate_reaction():
     return jsonify({
         "student_id": student_id,
         "kc_id": kc_id,
-        "reflective_prompt": prompt,
-        "improved_response_model": improved,
-        "educator_summary": f"SOLO level is {solo_level}. Reaction adapted to current weather.",
+        #"reflective_prompt": prompt,
+        #"improved_response_model": improved,
+        "weather": weather,
+        "temperature": temp,
+        #"educator_summary": f"SOLO level is {solo_level}. Reaction adapted to current weather.",
         "contextual_task": {
             "task_title": task_title,
             "task_description": task_description,
