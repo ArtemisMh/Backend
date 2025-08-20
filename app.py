@@ -171,28 +171,28 @@ def generate_reaction():
 
 
     if (weather in ["rainy", "stormy"] or temperature > 96) and distance_m < 1000 and site_open and site_free:
-    task_type = "Indoor Exploration"
+    #task_type = "Indoor Exploration"
     task_title = "Indoor Exploration at Nearby Site"
     task_description = "Visit the entrance hall or interior of the nearby monument and analyze one symbolic element while sheltered from weather."
     reasoning = "Bad weather or high temperature. Student is within 1KM of a free, open monument. Indoor task is safer and feasible."
 
 
     elif weather == "good" and temperature <= 96 and distance_m < 1000 and (not site_open or not site_free):
-    task_type = "Outdoor Exploration"
+    #task_type = "Outdoor Exploration"
     task_title = "Outdoor Observation at Nearby Site"
     task_description = "Sketch or photograph an external feature of the nearby historical site and describe how it supports the KC topic."
     reasoning = "Weather is good. Student is close to the site, but it is not accessible indoors, so an outdoor task is recommended."
 
 
     elif (weather in ["rainy", "stormy"] or temperature > 96) and distance_m >= 1000 and (not site_open or not site_free):
-    task_type = "Virtual Exploration"
+    #task_type = "Virtual Exploration"
     task_title = "Online Archive Analysis"
     task_description = "Watch a virtual tour or video about the KC topic, then write a short reflection comparing it with what you’ve previously learned."
     reasoning = "Student is far from the site and conditions prevent on-site visits. Digital exploration is the most viable option."
 
 
     else:
-    task_type = "Fallback Virtual"
+    #task_type = "Fallback Virtual"
     task_title = "Explore a Heritage Website"
     task_description = "Browse an official cultural heritage website related to the KC and summarize one new insight you gained."
     reasoning = "Conditions or data are incomplete. Defaulting to a safe, general digital learning task."
