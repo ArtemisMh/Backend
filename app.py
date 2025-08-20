@@ -92,6 +92,7 @@ def analyze_response():
     data = request.get_json()
     kc_id = data.get("kc_id")
     student_id = data.get("student_id")
+    educational_grade_text = data.get("educational_grade", "").lower()
     response_text = data.get("student_response", "").lower()
 
     if "meaning" in response_text or "symbol" in response_text:
@@ -110,6 +111,7 @@ def analyze_response():
     return jsonify({
         "kc_id": kc_id,
         "student_id": student_id,
+        "educational_grade":educational_grade_text,
         "SOLO_level": solo_level,
         "justification": justification,
         "misconceptions": None
@@ -145,56 +147,99 @@ def get_weather(lat, lng):
 def generate_reaction():
     data = request.get_json()
 
-    student_id = data.get("student_id")
     kc_id = data.get("kc_id")
+    student_id = data.get("student_id")
     solo_level = data.get("SOLO_level")
     location = data.get("location")
+    weather = data.get("weather")
+    temperature = data.get("temperature")
+    entry_access = data.get("entry_access")
+    fee_status = data.get("fee_status")
+
+    # Simulate distance and site metadata
+    # In a real deployment, this should be replaced by a proximity check using coordinates and external APIs
 
     try:
         lat, lng = [float(x.strip()) for x in location.split(",")]
     except:
-        return jsonify({"error": "Invalid coordinates"}), 400
+        return jsonify({"error": "Invalid coordinates format. Use 'lat, lng'."}), 400
 
-    weather, temp = get_weather(lat, lng)
+    # Simulate distance (in meters) and site info
+    distance_m = 850 # Example: student is 850 meters from site
+    site_open = (entry_access == "open")
+    site_free = (fee_status == "free")
 
-    very_hot = temp is not None and temp > 96
 
-    # if solo_level == "Uni-structural":
-    #     prompt = "What visual feature stands out to you at this site?"
-    #     improved = "The columns at the front seem symbolic and repetitive, indicating importance."
-    # elif solo_level == "Multi-structural":
-    #     prompt = "How do the different visual or architectural elements relate?"
-    #     improved = "The columns and arches together lead the viewer’s eye upward toward the heavens."
-    # else:
-    #     prompt = "What meaning is conveyed by the combination of materials and design?"
-    #     improved = "These structural elements are arranged to evoke awe, suggesting divine presence."
+    if (weather in ["rainy", "stormy"] or temperature > 96) and distance_m < 1000 and site_open and site_free:
+    task_type = "Indoor Exploration"
+    task_title = "Indoor Exploration at Nearby Site"
+    task_description = "Visit the entrance hall or interior of the nearby monument and analyze one symbolic element while sheltered from weather."
+    reasoning = "Bad weather or high temperature. Student is within 1KM of a free, open monument. Indoor task is safer and feasible."
 
-    prompt = None
-    improved = None
 
-    if weather == "rainy" or very_hot:
-        task_title = "Indoor Exploration"
-        task_description = "Due to rainy weather or high temperature, explore a virtual 3D tour of a cathedral and reflect on how light and form are represented digitally."
-        notes = f"Weather: {weather}. Temperature: {temp}°F. Outdoor activity avoided."
+    elif weather == "good" and temperature <= 96 and distance_m < 1000 and (not site_open or not site_free):
+    task_type = "Outdoor Exploration"
+    task_title = "Outdoor Observation at Nearby Site"
+    task_description = "Sketch or photograph an external feature of the nearby historical site and describe how it supports the KC topic."
+    reasoning = "Weather is good. Student is close to the site, but it is not accessible indoors, so an outdoor task is recommended."
+
+
+    elif (weather in ["rainy", "stormy"] or temperature > 96) and distance_m >= 1000 and (not site_open or not site_free):
+    task_type = "Virtual Exploration"
+    task_title = "Online Archive Analysis"
+    task_description = "Watch a virtual tour or video about the KC topic, then write a short reflection comparing it with what you’ve previously learned."
+    reasoning = "Student is far from the site and conditions prevent on-site visits. Digital exploration is the most viable option."
+
+
     else:
-        task_title = "On-Site Reflection"
-        task_description = "Observe the facade or entry of a nearby cathedral or historic building and photograph one detail that expresses spiritual symbolism."
-        notes = f"Weather is {weather}. Conditions suitable for outdoor observation."
+    task_type = "Fallback Virtual"
+    task_title = "Explore a Heritage Website"
+    task_description = "Browse an official cultural heritage website related to the KC and summarize one new insight you gained."
+    reasoning = "Conditions or data are incomplete. Defaulting to a safe, general digital learning task."
+
 
     return jsonify({
-        "student_id": student_id,
-        "kc_id": kc_id,
-        #"reflective_prompt": prompt,
-        #"improved_response_model": improved,
-        "weather": weather,
-        "temperature": temp,
-        #"educator_summary": f"SOLO level is {solo_level}. Reaction adapted to current weather.",
-        "contextual_task": {
-            "task_title": task_title,
-            "task_description": task_description,
-            "feasibility_notes": notes
-        }
+    "student_id": student_id,
+    "kc_id": kc_id,
+    "reflective_prompt": None,
+    "improved_response_model": None,
+    "educator_summary": None,
+    "contextual_task": {
+    "task_title": task_title,
+    "task_description": task_description,
+    "feasibility_notes": f"Weather: {weather}, Temperature: {temperature}°F, Distance: {distance_m} meters, Entry: {entry_access}, Fee: {fee_status}",
+    "reasoning": reasoning
+    }
     })
+    # weather, temp = get_weather(lat, lng)
+    # very_hot = temp is not None and temp > 96
+
+    # prompt = None
+    # improved = None
+
+    # if weather == "rainy" or very_hot:
+    #     task_title = "Indoor Exploration"
+    #     task_description = "Due to rainy weather or high temperature, explore a virtual 3D tour of a cathedral and reflect on how light and form are represented digitally."
+    #     notes = f"Weather: {weather}. Temperature: {temp}°F. Outdoor activity avoided."
+    # else:
+    #     task_title = "On-Site Reflection"
+    #     task_description = "Observe the facade or entry of a nearby cathedral or historic building and photograph one detail that expresses spiritual symbolism."
+    #     notes = f"Weather is {weather}. Conditions suitable for outdoor observation."
+
+    # return jsonify({
+    #     "student_id": student_id,
+    #     "kc_id": kc_id,
+    #     #"reflective_prompt": prompt,
+    #     #"improved_response_model": improved,
+    #     "weather": weather,
+    #     "temperature": temp,
+    #     #"educator_summary": f"SOLO level is {solo_level}. Reaction adapted to current weather.",
+    #     "contextual_task": {
+    #         "task_title": task_title,
+    #         "task_description": task_description,
+    #         "feasibility_notes": notes
+    #     }
+    # })
     
 # In-memory storage for historical assessment data (follow-up to analyze)
 @app.route("/store-history", methods=["POST"])
@@ -202,7 +247,7 @@ def store_history():
     data = request.get_json()
 
     required_fields = [
-        "kc_id", "student_id", "student_response", "SOLO_level",
+        "kc_id", "student_id", "educational_grade", "student_response", "SOLO_level",
         "target_SOLO_level", "justification", "misconceptions", "location"
     ]
     missing = [field for field in required_fields if field not in data]
