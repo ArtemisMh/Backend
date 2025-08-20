@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import uuid
 import requests
 import os
+import math
 
 
 app = Flask(__name__)
@@ -38,7 +39,6 @@ def submit_kc():
 
     # Fallback auto-ID if GPT didn’t provide it
     if not kc_id:
-        import uuid
         kc_id = f"KC_{str(uuid.uuid4())[:8]}"
         data["kc_id"] = kc_id
 
@@ -117,6 +117,15 @@ def analyze_response():
         "misconceptions": None
     })
 
+# Utility to calculate Haversine distance
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371000 # Earth radius in meters
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
+
 def get_weather(lat, lng):
     try:
         url = "https://api.openweathermap.org/data/2.5/weather"
@@ -124,7 +133,6 @@ def get_weather(lat, lng):
             "lat": lat,
             "lon": lng,
             "appid": OPENWEATHER_API_KEY,
-            #"units": "metric",
             "units": "imperial"  # Fahrenheit
         })
         data = response.json()
@@ -142,105 +150,6 @@ def get_weather(lat, lng):
     except:
         return "unknown", None
 
-# Route for React Layer GPT — returns a next-step task or reflection based on context
-@app.route("/generate-reaction", methods=["POST"])
-def generate_reaction():
-    data = request.get_json()
-
-    kc_id = data.get("kc_id")
-    student_id = data.get("student_id")
-    solo_level = data.get("SOLO_level")
-    location = data.get("location")
-    #time_of_day = data.get("time_of_day")
-    weather = data.get("weather")
-    temperature = data.get("temperature")
-    entry_access = data.get("entry_access")
-    fee_status = data.get("fee_status")
-
-    # Simulate distance and site metadata
-    # In a real deployment, this should be replaced by a proximity check using coordinates and external APIs
-
-    try:
-        lat, lng = [float(x.strip()) for x in location.split(",")]
-    except:
-        return jsonify({"error": "Invalid coordinates format. Use 'lat, lng'."}), 400
-
-    # Simulate distance (in meters) and site info
-    distance_m = 850 # Example: student is 850 meters from site
-    site_open = (entry_access == "open")
-    site_free = (fee_status == "free")
-
-
-    if (weather in ["rainy", "stormy"] or temperature > 96) and distance_m < 1000 and site_open and site_free:
-        task_type = "Indoor Exploration"
-        task_title = "Indoor Exploration at Nearby Site"
-        task_description = "Visit the entrance hall or interior of the nearby monument and analyze one symbolic element while sheltered from weather."
-        reasoning = "Bad weather or high temperature. Student is within 1KM of a free, open monument. Indoor task is safer and feasible."
-
-    elif weather == "good" and temperature <= 96 and distance_m < 1000 and (not site_open or not site_free):
-        task_type = "Outdoor Exploration"
-        task_title = "Outdoor Observation at Nearby Site"
-        task_description = "Sketch or photograph an external feature of the nearby historical site and describe how it supports the KC topic."
-        reasoning = "Weather is good. Student is close to the site, but it is not accessible indoors, so an outdoor task is recommended."
-
-    elif (weather in ["rainy", "stormy"] or temperature > 96) and distance_m >= 1000 and (not site_open or not site_free):
-        task_type = "Virtual Exploration"
-        task_title = "Online Archive Analysis"
-        task_description = "Watch a virtual tour or video about the KC topic, then write a short reflection comparing it with what you’ve previously learned."
-        reasoning = "Student is far from the site and conditions prevent on-site visits. Digital exploration is the most viable option."
-
-    else:
-        task_type = "Fallback Virtual"
-        task_title = "Explore a Heritage Website"
-        task_description = "Browse an official cultural heritage website related to the KC and summarize one new insight you gained."
-        reasoning = "Conditions or data are incomplete. Defaulting to a safe, general digital learning task."
-
-    return jsonify({
-        "kc_id": kc_id,
-        "student_id": student_id,
-        "reflective_prompt": None,
-        "improved_response_model": None,
-        #"weather": weather,
-        #"temperature": temperature,
-        "educator_summary": None,
-        "contextual_task": {
-        "task_type": task_type,
-        "task_title": task_title,
-        "task_description": task_description,
-        "feasibility_notes": f"Weather: {weather}, Temperature: {temperature}°F, Distance: {distance_m} meters, Entry: {entry_access}, Fee: {fee_status}",
-        "reasoning": reasoning
-        }
-    })
-    # weather, temp = get_weather(lat, lng)
-    # very_hot = temp is not None and temp > 96
-
-    # prompt = None
-    # improved = None
-
-    # if weather == "rainy" or very_hot:
-    #     task_title = "Indoor Exploration"
-    #     task_description = "Due to rainy weather or high temperature, explore a virtual 3D tour of a cathedral and reflect on how light and form are represented digitally."
-    #     notes = f"Weather: {weather}. Temperature: {temp}°F. Outdoor activity avoided."
-    # else:
-    #     task_title = "On-Site Reflection"
-    #     task_description = "Observe the facade or entry of a nearby cathedral or historic building and photograph one detail that expresses spiritual symbolism."
-    #     notes = f"Weather is {weather}. Conditions suitable for outdoor observation."
-
-    # return jsonify({
-    #     "student_id": student_id,
-    #     "kc_id": kc_id,
-    #     #"reflective_prompt": prompt,
-    #     #"improved_response_model": improved,
-    #     "weather": weather,
-    #     "temperature": temp,
-    #     #"educator_summary": f"SOLO level is {solo_level}. Reaction adapted to current weather.",
-    #     "contextual_task": {
-    #         "task_title": task_title,
-    #         "task_description": task_description,
-    #         "feasibility_notes": notes
-    #     }
-    # })
-    
 # In-memory storage for historical assessment data (follow-up to analyze)
 @app.route("/store-history", methods=["POST"])
 def store_history():
@@ -288,7 +197,6 @@ def store_history():
 
         # Extract timezone info from OpenCage annotations
         timezone_id = geo["results"][0]["annotations"]["timezone"]["name"]
-
         # Convert to local time using zoneinfo
         local_time = datetime.now(ZoneInfo(timezone_id))
         timestamp_local = local_time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -297,6 +205,9 @@ def store_history():
         record = {
             **data,
             "location": location_str,
+            "coordinates": f"{lat},{lng}",
+            "lat": lat,
+            "lng": lng,
             "timestamp": timestamp_local,
             "timezone": timezone_label
         }
@@ -313,6 +224,75 @@ def store_history():
             "status": "error",
             "message": f"Could not process location or time: {str(e)}"
         }), 500
+
+# Route for React Layer GPT — returns a next-step task or reflection based on context
+@app.route("/generate-reaction", methods=["POST"])
+def generate_reaction():
+    data = request.get_json()
+    kc_id = data.get("kc_id")
+    student_id = data.get("student_id")
+    solo_level = data.get("SOLO_level")
+    #weather, temperature = get_weather(lat, lng)
+    entry_access = data.get("entry_access")
+    fee_status = data.get("fee_status")
+
+    # Retrieve student coordinates from history
+    lat1 = lon1 = None
+    for record in reversed(student_history):
+        if record["student_id"] == student_id and record["kc_id"] == kc_id:
+            lat1 = record.get("lat")
+            lon1 = record.get("lng")
+            break
+
+        if lat1 is None or lon1 is None:
+            return jsonify({"error": "Student coordinates not found in history."}), 400
+
+    # Simulated heritage site coordinates (e.g., nearest cathedral)
+    site_lat, site_lon = 41.6528, -4.7286 # Valladolid Cathedral
+    distance_m = haversine(lat1, lon1, site_lat, site_lon)
+    site_open = (entry_access == "open")
+    site_free = (fee_status == "free")
+
+    if (weather in ["rainy", "stormy"] or temperature > 96) and distance_m < 1000 and site_open and site_free:
+        task_type = "Indoor Exploration"
+        task_title = "Indoor Exploration at Nearby Site"
+        task_description = "Visit the entrance hall or interior of the nearby monument and analyze one symbolic element while sheltered from weather."
+        reasoning = "Bad weather or high temperature. Student is within 1KM of a free, open monument. Indoor task is safer and feasible."
+
+    elif weather == "good" and temperature <= 96 and distance_m < 1000 and (not site_open or not site_free):
+        task_type = "Outdoor Exploration"
+        task_title = "Outdoor Observation at Nearby Site"
+        task_description = "Sketch or photograph an external feature of the nearby historical site and describe how it supports the KC topic."
+        reasoning = "Weather is good. Student is close to the site, but it is not accessible indoors, so an outdoor task is recommended."
+
+    elif (weather in ["rainy", "stormy"] or temperature > 96) and distance_m >= 1000 and (not site_open or not site_free):
+        task_type = "Virtual Exploration"
+        task_title = "Online Archive Analysis"
+        task_description = "Watch a virtual tour or video about the KC topic, then write a short reflection comparing it with what you’ve previously learned."
+        reasoning = "Student is far from the site and conditions prevent on-site visits. Digital exploration is the most viable option."
+
+    else:
+        task_type = "Fallback Virtual"
+        task_title = "Explore a Heritage Website"
+        task_description = "Browse an official cultural heritage website related to the KC and summarize one new insight you gained."
+        reasoning = "Conditions or data are incomplete. Defaulting to a safe, general digital learning task."
+
+    return jsonify({
+        "kc_id": kc_id,
+        "student_id": student_id,
+        "reflective_prompt": None,
+        "improved_response_model": None,
+        "weather": weather,
+        "temperature": temperature,
+        "educator_summary": None,
+        "contextual_task": {
+            "task_type": task_type,
+            "task_title": task_title,
+            "task_description": task_description,
+            "feasibility_notes": f"Weather: {weather}, Temperature: {temperature}°F, Distance: {distance_m} meters, Entry: {entry_access}, Fee: {fee_status}",
+            "reasoning": reasoning
+        }
+    })
 
 #if __name__ == "__main__":
 #    app.run(debug=True)
