@@ -70,6 +70,10 @@ def get_kc():
     }), 200
 
 
+@app.route("/list_kcs", methods=["GET"])
+def list_kcs():
+    return jsonify({"kcs": list(kc_store.values())}), 200
+    
 @app.route("/get-student-history", methods=["GET"])
 def get_student_history():
     student_id = request.args.get("student_id")
