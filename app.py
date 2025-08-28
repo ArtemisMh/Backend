@@ -252,22 +252,47 @@ def generate_reaction():
     # Get weather forecast for student location
     weather, temperature = get_weather(lat1, lon1)
 
-    # Simulated heritage site coordinates (e.g., nearest cathedral)
-    site_lat, site_lon = 41.6528, -4.7286 # Valladolid Cathedral
-    distance_m = haversine(lat1, lon1, site_lat, site_lon)
+    # Use Google Places API to search for nearby cultural heritage sites
+    try:
+        google_key = os.getenv("GOOGLE_API_KEY")
+        place_search_url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+        params = {
+            "location": f"{lat1},{lon1}",
+            "radius": 1500,
+            "keyword": "cultural heritage site",
+            "key": google_key
+        }
+        response = requests.get(place_search_url, params=params)
+        places = response.json().get("results", [])
+
+        if not places:
+            raise Exception("No heritage site found nearby")
+
+        nearest = places[0]
+        site_lat = nearest["geometry"]["location"]["lat"]
+        site_lon = nearest["geometry"]["location"]["lng"]
+        site_name = nearest.get("name")
+        site_address = nearest.get("vicinity")
+        site_url = f"https://www.google.com/maps/place/?q=place_id:{nearest['place_id']}"
+
+    except Exception as e:
+        site_lat = site_lon = None
+        site_name = site_address = site_url = "Unavailable"
+
+    distance_m = haversine(lat1, lon1, site_lat, site_lon) if site_lat and site_lon else 9999
     site_open = (entry_access == "open")
     site_free = (fee_status == "free")
 
     if (weather in ["rainy", "stormy"] or temperature > 96) and distance_m < 1000 and site_open and site_free:
         task_type = "Indoor Exploration"
-        task_title = "Indoor Exploration at Nearby Site"
-        task_description = "Visit the entrance hall or interior of the nearby monument and analyze one symbolic element while sheltered from weather."
+        task_title = f"Indoor Exploration at {site_name}"
+        task_description = f"Visit the entrance hall or interior of {site_name} ({site_address}) and analyze one symbolic element while sheltered from weather."
         reasoning = "Bad weather or high temperature. Student is within 1KM of a free, open monument. Indoor task is safer and feasible."
 
     elif weather == "good" and temperature <= 96 and distance_m < 1000 and (not site_open or not site_free):
         task_type = "Outdoor Exploration"
-        task_title = "Outdoor Observation at Nearby Site"
-        task_description = "Sketch or photograph an external feature of the nearby historical site and describe how it supports the KC topic."
+        task_title = f"Outdoor Observation at {site_name}"
+        task_description = f"Sketch or photograph an external feature of {site_name} and describe how it supports the KC topic."
         reasoning = "Weather is good. Student is close to the site, but it is not accessible indoors, so an outdoor task is recommended."
 
     elif (weather in ["rainy", "stormy"] or temperature > 96) and distance_m >= 1000 and (not site_open or not site_free):
@@ -294,8 +319,11 @@ def generate_reaction():
             "task_type": task_type,
             "task_title": task_title,
             "task_description": task_description,
-            "feasibility_notes": f"Weather: {weather}, Temperature: {temperature}°F, Distance: {distance_m} meters, Entry: {entry_access}, Fee: {fee_status}",
-            "reasoning": reasoning
+            "feasibility_notes": f"Weather: {weather}, Temperature: {temperature}°F, Distance: {int(distance_m)} meters, Entry: {entry_access}, Fee: {fee_status}",
+            "reasoning": reasoning,
+            "site_name": site_name,
+            "site_address": site_address,
+            "site_url": site_url
         }
     })
 
