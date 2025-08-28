@@ -50,7 +50,6 @@ def submit_kc():
         "kc": data
     }), 200
 
-
 # New: Route to fetch KC metadata from backend (shared across Analyze/React)
 @app.route("/get_kc", methods=["GET"])
 def get_kc():
@@ -68,7 +67,6 @@ def get_kc():
         "title": kc_data.get("title"),
         "target_SOLO_level": kc_data.get("target_SOLO_level")
     }), 200
-
 
 @app.route("/list_kcs", methods=["GET"])
 def list_kcs():
@@ -88,7 +86,21 @@ def get_student_history():
     if kc_id:
         results = [r for r in results if r["kc_id"] == kc_id]
 
-    return jsonify({"records": results}), 200
+    # Return selected fields per record
+    response = []
+    for record in results:
+        response.append({
+            "timestamp": record.get("timestamp"),
+            "location": record.get("location"),
+            "kc_id": record.get("kc_id"),
+            "SOLO_level": record.get("SOLO_level"),
+            "student_response": record.get("student_response"),
+            "justification": record.get("justification"),
+            "misconceptions": record.get("misconceptions"),
+            "target_SOLO_level": record.get("target_SOLO_level")
+        })
+
+    return jsonify({"records": response}), 200
 
 # Route for Analyze Layer GPT — classifies SOLO level of a student response
 @app.route("/analyze-response", methods=["POST"])
@@ -236,7 +248,6 @@ def generate_reaction():
     kc_id = data.get("kc_id")
     student_id = data.get("student_id")
     solo_level = data.get("SOLO_level")
-    #weather, temperature = get_weather(lat, lng)
     entry_access = data.get("entry_access")
     fee_status = data.get("fee_status")
 
@@ -248,8 +259,11 @@ def generate_reaction():
             lon1 = record.get("lng")
             break
 
-        if lat1 is None or lon1 is None:
-            return jsonify({"error": "Student coordinates not found in history."}), 400
+    if lat1 is None or lon1 is None:
+        return jsonify({"error": "Student coordinates not found in history."}), 400
+
+    # Get weather forecast for student location
+    weather, temperature = get_weather(lat1, lon1)
 
     # Simulated heritage site coordinates (e.g., nearest cathedral)
     site_lat, site_lon = 41.6528, -4.7286 # Valladolid Cathedral
