@@ -34,7 +34,7 @@ def submit_kc():
     if not data.get("approved", False):
         return jsonify({
             "status": "error",
-            "message": "KC not submitted: approval required. Please set 'approved': true in the payload."
+            "message": "KC not submitted: approval required."
         }), 400
 
     # Fallback auto-ID if GPT didn’t provide it
@@ -193,30 +193,17 @@ def store_history():
 
     try:
         if is_coord:
-            geo = requests.get("https://api.opencagedata.com/geocode/v1/json", params={
-                "q": f"{lat},{lng}",
-                "key": OPENCAGE_API_KEY
-            }).json()
-            if not geo["results"]:
-                raise Exception("Unable to reverse geocode coordinates.")
-            location_str = geo["results"][0]["formatted"]
+            geo = requests.get("https://api.opencagedata.com/geocode/v1/json", params={"q": f"{lat},{lng}", "key": OPENCAGE_API_KEY}).json()
         else:
-            geo = requests.get("https://api.opencagedata.com/geocode/v1/json", params={
-                "q": location_input,
-                "key": OPENCAGE_API_KEY
-            }).json()
-            if not geo["results"]:
-                raise Exception("Unable to geocode location string.")
-            location_str = geo["results"][0]["formatted"]
+            geo = requests.get("https://api.opencagedata.com/geocode/v1/json", params={"q": location_input, "key": OPENCAGE_API_KEY}).json()
             lat = geo["results"][0]["geometry"]["lat"]
             lng = geo["results"][0]["geometry"]["lng"]
 
+        location_str = geo["results"][0]["formatted"]
         # Extract timezone info from OpenCage annotations
         timezone_id = geo["results"][0]["annotations"]["timezone"]["name"]
         # Convert to local time using zoneinfo
-        local_time = datetime.now(ZoneInfo(timezone_id))
-        timestamp_local = local_time.strftime("%Y-%m-%dT%H:%M:%S")
-        timezone_label = timezone_id
+        timestamp = datetime.now(ZoneInfo(timezone_id)).strftime("%Y-%m-%dT%H:%M:%S")
 
         record = {
             **data,
@@ -224,8 +211,8 @@ def store_history():
             "coordinates": f"{lat},{lng}",
             "lat": lat,
             "lng": lng,
-            "timestamp": timestamp_local,
-            "timezone": timezone_label
+            "timestamp": timestamp,
+            "timezone": timezone_id
         }
 
         student_history.append(record)
