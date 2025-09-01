@@ -231,101 +231,242 @@ def store_history():
 # Route for React Layer GPT — returns a next-step task or reflection based on context
 @app.route("/generate-reaction", methods=["POST"])
 def generate_reaction():
-    data = request.get_json()
+    """
+    Generates a concrete learning task (virtual/indoor/outdoor) based on:
+      1) Distance to nearest relevant site (first gate: 1 km threshold),
+      2) Weather & temperature (only if within 1 km),
+      3) Site accessibility (open/closed) and fee (free/paid) (only if within 1 km).
+
+    Returns a single JSON payload with:
+      - kc_id, student_id
+      - location snapshot (from latest stored history)
+      - nearest site metadata (name/address/url/distance/open/fee)
+      - weather (if checked)
+      - chosen task {type, title, description, link (if virtual), feasibility_notes}
+
+    Notes:
+      - If distance > 1000 m: we SKIP weather/access checks and immediately propose a virtual task.
+      - Place Details open_now/price_level are best-effort; missing data becomes "unknown".
+    """
+    data = request.get_json() or {}
     kc_id = data.get("kc_id")
     student_id = data.get("student_id")
-    solo_level = data.get("SOLO_level")
-    entry_access = data.get("entry_access")
-    fee_status = data.get("fee_status")
 
-    # Retrieve student coordinates from history
+    if not kc_id or not student_id:
+        return jsonify({"error": "kc_id and student_id are required"}), 400
+
+    # 1) Get most recent stored location/timezone from history (authoritative)
     lat1 = lon1 = None
-    for record in reversed(student_history):
-        if record["student_id"] == student_id and record["kc_id"] == kc_id:
-            lat1 = record.get("lat")
-            lon1 = record.get("lng")
+    last_rec = None
+    for rec in reversed(student_history):
+        if rec.get("student_id") == student_id and rec.get("kc_id") == kc_id:
+            lat1 = rec.get("lat")
+            lon1 = rec.get("lng")
+            last_rec = rec
             break
+    if lat1 is None or lon1 is None or last_rec is None:
+        return jsonify({"error": "Student coordinates not found in history for the given kc_id and student_id."}), 400
 
-    if lat1 is None or lon1 is None:
-        return jsonify({"error": "Student coordinates not found in history."}), 400
+    location_block = {
+        "formatted": last_rec.get("location"),
+        "coordinates": f"{lat1},{lon1}",
+        "lat": lat1,
+        "lng": lon1,
+        "timestamp": last_rec.get("timestamp"),
+        "timezone": last_rec.get("timezone"),
+    }
 
-    # Get weather forecast for student location
-    weather, temperature = get_weather(lat1, lon1)
+    # 2) Build KC-driven keyword for relevant site search
+    kc = kc_store.get(kc_id, {})
+    kc_title = (kc.get("title") or "").strip()
+    kc_desc = (kc.get("description") or "").strip()
+    keywords = kc_title if kc_title else (kc_desc if kc_desc else "cultural heritage")
 
-    # Use Google Places API to search for nearby cultural heritage sites
+    # 3) Find nearest relevant site via Google Places Nearby Search
+    google_key = os.getenv("GOOGLE_API_KEY")
+    site_lat = site_lon = None
+    site_name = "Unavailable"
+    site_address = "Unavailable"
+    site_url = None
+    open_status = "unknown"  # "open" | "closed" | "unknown"
+    fee_status = "unknown"   # "free" | "unknown"
+
     try:
-        google_key = os.getenv("GOOGLE_API_KEY")
-        place_search_url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+        nearby_url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
         params = {
             "location": f"{lat1},{lon1}",
-            "radius": 1500,
-            "keyword": "cultural heritage site",
+            "radius": 1500,          # 1.5 km search cone
+            "keyword": keywords,     # relevance via KC
             "key": google_key
         }
-        response = requests.get(place_search_url, params=params)
-        places = response.json().get("results", [])
+        r = requests.get(nearby_url, params=params, timeout=12)
+        r.raise_for_status()
+        results = (r.json() or {}).get("results", [])
+        if results:
+            nearest = results[0]
+            site_lat = nearest["geometry"]["location"]["lat"]
+            site_lon = nearest["geometry"]["location"]["lng"]
+            site_name = nearest.get("name", "Unknown")
+            site_address = nearest.get("vicinity", "Unknown")
+            place_id = nearest.get("place_id")
+            site_url = f"https://www.google.com/maps/place/?q=place_id:{place_id}" if place_id else None
 
-        if not places:
-            raise Exception("No heritage site found nearby")
-
-        nearest = places[0]
-        site_lat = nearest["geometry"]["location"]["lat"]
-        site_lon = nearest["geometry"]["location"]["lng"]
-        site_name = nearest.get("name")
-        site_address = nearest.get("vicinity")
-        site_url = f"https://www.google.com/maps/place/?q=place_id:{nearest['place_id']}"
-
-    except Exception as e:
+            # Optional enrichment: opening hours + price level
+            if place_id:
+                details_url = "https://maps.googleapis.com/maps/api/place/details/json"
+                d_params = {"place_id": place_id, "fields": "opening_hours,price_level", "key": google_key}
+                d = requests.get(details_url, params=d_params, timeout=12)
+                if d.ok:
+                    dj = d.json() or {}
+                    res = dj.get("result", {})
+                    if isinstance(res.get("opening_hours", {}).get("open_now"), bool):
+                        open_status = "open" if res["opening_hours"]["open_now"] else "closed"
+                    if "price_level" in res:
+                        fee_status = "free" if res["price_level"] == 0 else "unknown"
+    except Exception:
+        # leave defaults as "unknown" and no coordinates to force virtual if needed
         site_lat = site_lon = None
-        site_name = site_address = site_url = "Unavailable"
 
-    distance_m = haversine(lat1, lon1, site_lat, site_lon) if site_lat and site_lon else 9999
-    site_open = (entry_access == "open")
-    site_free = (fee_status == "free")
+    # 4) Distance gate (FIRST)
+    distance_m = haversine(lat1, lon1, site_lat, site_lon) if (site_lat and site_lon) else 999999
+    is_within_1km = distance_m <= 1000
 
-    if (weather in ["rainy", "stormy"] or temperature > 96) and distance_m < 1000 and site_open and site_free:
-        task_type = "Indoor Exploration"
-        task_title = f"Indoor Exploration at {site_name}"
-        task_description = f"Visit the entrance hall or interior of {site_name} ({site_address}) and analyze one symbolic element while sheltered from weather."
-        reasoning = "Bad weather or high temperature. Student is within 1KM of a free, open monument. Indoor task is safer and feasible."
+    # Helper to craft a KC-relevant virtual link even without Places
+    def kc_virtual_link():
+        # Safest, always-available fallback: Wikipedia search with KC title/desc
+        query = kc_title or kc_desc or "heritage"
+        return f"https://en.wikipedia.org/w/index.php?search={requests.utils.quote(query)}"
 
-    elif weather == "good" and temperature <= 96 and distance_m < 1000 and (not site_open or not site_free):
-        task_type = "Outdoor Exploration"
-        task_title = f"Outdoor Observation at {site_name}"
-        task_description = f"Sketch or photograph an external feature of {site_name} and describe how it supports the KC topic."
-        reasoning = "Weather is good. Student is close to the site, but it is not accessible indoors, so an outdoor task is recommended."
+    # 5) If distance > 1 km → Virtual task (skip weather/access checks)
+    if not is_within_1km:
+        virtual_link = site_url or kc_virtual_link()
+        task = {
+            "task_type": "Virtual",
+            "task_title": "Exploración virtual del patrimonio",
+            "task_description": (
+                "Visita el sitio web y busca un dato que conecte con el tema del KC. "
+                "Escribe dos oraciones: (1) ¿Qué aprendiste nuevo? (2) ¿Cómo se relaciona con lo ya visto en clase?"
+            ),
+            "link": virtual_link,
+            "feasibility_notes": (
+                f"Distance is {int(distance_m)} m (> 1000 m). "
+                "Per the rule, contextual checks are skipped and a virtual activity is assigned."
+            )
+        }
+        return jsonify({
+            "kc_id": kc_id,
+            "student_id": student_id,
+            "location": location_block,
+            "nearest_site": {
+                "name": site_name,
+                "address": site_address,
+                "url": site_url,
+                "distance_m": int(distance_m),
+                "open_status": "unknown",
+                "fee_status": "unknown"
+            },
+            "weather": None,  # not checked when > 1 km
+            "task": task
+        }), 200
 
-    elif (weather in ["rainy", "stormy"] or temperature > 96) and distance_m >= 1000 and (not site_open or not site_free):
-        task_type = "Virtual Exploration"
-        task_title = "Online Archive Analysis"
-        task_description = "Watch a virtual tour or video about the KC topic, then write a short reflection comparing it with what you’ve previously learned."
-        reasoning = "Student is far from the site and conditions prevent on-site visits. Digital exploration is the most viable option."
+    # 6) If distance ≤ 1 km → NOW check weather & temperature, then decide indoor/outdoor/virtual
+    try:
+        condition, temp_f = get_weather(lat1, lon1)  # e.g., "sunny"|"cloudy"|"rainy"|"stormy"|"unknown", 72.3
+    except Exception:
+        condition, temp_f = "unknown", None
 
+    # Boolean flags for clarity
+    bad_weather_or_hot = (condition in {"rainy", "stormy"}) or (temp_f is not None and temp_f > 96)
+    good_weather_and_not_hot = (condition in {"sunny", "clear", "cloudy"}) and (temp_f is not None and temp_f <= 96)
+    site_is_open = (open_status == "open")
+    site_is_free = (fee_status == "free")
+
+    # ---- DECISION MATRIX (within 1 km) ----
+    # A) Bad weather/hot AND site open & free  -> Indoor contextual task at site
+    if bad_weather_or_hot and site_is_open and site_is_free:
+        task = {
+            "task_type": "Indoor",
+            "task_title": f"Exploración interior en {site_name}",
+            "task_description": (
+                f"Entra a {site_name} ({site_address}) y observa un elemento simbólico (por ejemplo, un relieve o un vitral). "
+                "Escribe tres oraciones: qué ves, qué crees que significa y cómo se conecta con el tema del KC."
+            ),
+            "feasibility_notes": (
+                f"Within 1 km ({int(distance_m)} m). Weather is '{condition}' with "
+                f"{'unknown' if temp_f is None else f'{temp_f}°F'} → indoor is safer. "
+                "Site is open and free."
+            )
+        }
+
+    # B) Good weather & not hot AND (site NOT open OR NOT free) -> Outdoor contextual task nearby
+    elif good_weather_and_not_hot and (not site_is_open or not site_is_free):
+        task = {
+            "task_type": "Outdoor",
+            "task_title": f"Observación exterior de {site_name}",
+            "task_description": (
+                f"Desde el exterior de {site_name}, dibuja o fotografía un rasgo visible (arco, torre, fachada). "
+                "Explica en dos oraciones cómo ese rasgo se relaciona con el tema del KC."
+            ),
+            "feasibility_notes": (
+                f"Within 1 km ({int(distance_m)} m). Weather is '{condition}' and "
+                f"{'unknown' if temp_f is None else f'{temp_f}°F'} (≤ 96°F). "
+                "El interior no es accesible (cerrado o con costo), así que se propone una actividad exterior."
+            )
+        }
+
+    # C) Good weather & not hot AND site open & free -> Outdoor contextual task at site (natural best-case)
+    elif good_weather_and_not_hot and site_is_open and site_is_free:
+        task = {
+            "task_type": "Outdoor",
+            "task_title": f"Recorrido guiado al aire libre en {site_name}",
+            "task_description": (
+                f"Camina alrededor de {site_name} y localiza dos detalles arquitectónicos. "
+                "Describe cómo cada detalle ayuda a entender el tema del KC y compara sus funciones."
+            ),
+            "feasibility_notes": (
+                f"Within 1 km ({int(distance_m)} m). Weather is '{condition}' and "
+                f"{'unknown' if temp_f is None else f'{temp_f}°F'} (≤ 96°F). "
+                "El sitio está abierto y es gratuito; actividad exterior recomendada."
+            )
+        }
+
+    # D) Anything else (unknowns, mixed signals) -> Virtual (safe fallback)
     else:
-        task_type = "Fallback Virtual"
-        task_title = "Explore a Heritage Website"
-        task_description = "Browse an official cultural heritage website related to the KC and summarize one new insight you gained."
-        reasoning = "Conditions or data are incomplete. Defaulting to a safe, general digital learning task."
+        virtual_link = site_url or kc_virtual_link()
+        task = {
+            "task_type": "Virtual",
+            "task_title": "Exploración virtual del patrimonio (resguardo)",
+            "task_description": (
+                "Visita el sitio web y localiza un elemento arquitectónico clave. "
+                "Responde: ¿qué función cumple y cómo se conecta con el tema del KC?"
+            ),
+            "link": virtual_link,
+            "feasibility_notes": (
+                f"Within 1 km ({int(distance_m)} m), pero las condiciones no permiten seguridad o acceso suficiente "
+                f"(weather='{condition}', temp={temp_f}, open='{open_status}', fee='{fee_status}'). "
+                "Se recomienda actividad virtual."
+            )
+        }
 
     return jsonify({
         "kc_id": kc_id,
         "student_id": student_id,
-        "reflective_prompt": None,
-        "improved_response_model": None,
-        "weather": weather,
-        "temperature": temperature,
-        "educator_summary": None,
-        "contextual_task": {
-            "task_type": task_type,
-            "task_title": task_title,
-            "task_description": task_description,
-            "feasibility_notes": f"Weather: {weather}, Temperature: {temperature}°F, Distance: {int(distance_m)} meters, Entry: {entry_access}, Fee: {fee_status}",
-            "reasoning": reasoning,
-            "site_name": site_name,
-            "site_address": site_address,
-            "site_url": site_url
-        }
-    })
+        "location": location_block,
+        "nearest_site": {
+            "name": site_name,
+            "address": site_address,
+            "url": site_url,
+            "distance_m": int(distance_m),
+            "open_status": open_status,
+            "fee_status": fee_status
+        },
+        "weather": {
+            "condition": condition,
+            "temperature_f": temp_f
+        },
+        "task": task
+    }), 200
+
 
 #if __name__ == "__main__":
 #    app.run(debug=True)
