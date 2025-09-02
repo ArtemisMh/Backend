@@ -9,15 +9,15 @@ import math
 
 
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})  # adjust/restrict origins as needed
 
-CORS(app, resources={r"/*": {"origins": "*"}})  # adjust origins as needed
 
-# Secure keys from environment variables
+# -------------------------- Environment keys --------------------------- #
 OPENCAGE_API_KEY = os.getenv("OPENCAGE_API_KEY")
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") # Only for timezone lookup
 
-
+# --------------------------- In-memory stores -------------------------- #
 kc_store = {}
 student_history = []
 
@@ -30,7 +30,7 @@ def home():
 
 @app.route("/submit_kc", methods=["POST"])
 def submit_kc():
-    data = request.get_json()
+    data = request.get_json() or {}
     kc_id = data.get("kc_id")
 
     # Require teacher approval before storing
@@ -44,9 +44,10 @@ def submit_kc():
     if not kc_id:
         kc_id = f"KC_{str(uuid.uuid4())[:8]}"
         data["kc_id"] = kc_id
-
+    
     kc_store[kc_id] = data
     print(f"KC stored: {kc_id}")
+    app.logger.info(f"KC stored: {kc_id}")
     return jsonify({
         "status": "success",
         "message": f"Knowledge component {kc_id} received",
@@ -80,7 +81,7 @@ def list_kcs():
 def get_student_history():
     student_id = request.args.get("student_id")
     kc_id = request.args.get("kc_id")
-    latest = request.args.get("latest", "").lower() == "true"
+    latest = (request.args.get("latest", "") or "").lower() == "true"
 
     if not student_id:
         return jsonify({"error": "student_id is required"}), 400
@@ -186,7 +187,6 @@ def get_weather(lat, lng):
     except Exception:
         return "unknown", None
 
-
 # ---------------------- Location Normalization Helpers ---------------- #
 def _parse_latlng_from_string(s: str):
     """Accepts '40.4168,-3.7038' and returns (lat, lng) or (None, None)."""
@@ -224,7 +224,7 @@ def _ensure_coordinates_and_location(payload: dict):
     if isinstance(loc, str) and "," in loc:
         plat, plng = _parse_latlng_from_string(loc)
         if plat is not None and plng is not None:
-            return plat, plng, loc, None  # use provided string as label
+            return plat, plng, loc, None  # keep provided string as label
 
     # 3) Geocode free-text
     if isinstance(loc, str) and loc.strip():
@@ -267,6 +267,134 @@ def _now_in_timezone(tz_name: str):
     dt = datetime.now(tz)
     # ISO 8601 with offset, e.g., 2025-09-01T10:22:13+0200
     return dt.strftime("%Y-%m-%dT%H:%M:%S%z"), str(tz)
+
+
+# ---------------------- Places/Task Helpers ------------------------- #
+
+def _build_site_keywords(kc_title: str, kc_desc: str):
+    base = []
+    if kc_title:
+        base.append(kc_title)
+    if kc_desc and kc_desc.lower() not in kc_title.lower():
+        base.append(kc_desc)
+    base.append("historic OR heritage OR monument OR cathedral OR museum OR archaeological OR site")
+    return " ".join([b for b in base if b]).strip() or "historic site"
+
+def _nearby_rankby_distance(lat: float, lng: float, keyword: str, api_key: str):
+    url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+    params = {
+        "location": f"{lat},{lng}",
+        "rankby": "distance",   # nearest-first, no radius cap
+        "keyword": keyword,
+        "key": api_key
+    }
+    r = requests.get(url, params=params, timeout=12)
+    r.raise_for_status()
+    return (r.json() or {}).get("results", [])
+
+def _google_nearest_place(lat: float, lng: float, keywords: str, api_key: str, exclude_city: str | None = None):
+    """
+    Returns the closest relevant place using rank-by-distance.
+    If exclude_city is provided, prefer the nearest result whose 'vicinity' does not contain that city.
+    """
+    if not api_key:
+        return None
+
+    results = []
+    try:
+        results = _nearby_rankby_distance(lat, lng, keywords, api_key)
+    except Exception:
+        results = []
+
+    if not results:
+        try:
+            results = _nearby_rankby_distance(lat, lng, "historic site OR monument OR museum OR cathedral OR archaeological", api_key)
+        except Exception:
+            results = []
+
+    if not results:
+        return None
+
+    # Prefer a result not in exclude_city (soft filter)
+    picked = None
+    if exclude_city:
+        city_lower = exclude_city.lower()
+        for p in results:
+            vic = (p.get("vicinity") or "").lower()
+            if city_lower not in vic:
+                picked = p
+                break
+    if picked is None:
+        picked = results[0]
+
+    geom = picked.get("geometry", {}).get("location", {})
+    return {
+        "place_id": picked.get("place_id"),
+        "name": picked.get("name", "Unknown"),
+        "address": picked.get("vicinity", "Unknown"),
+        "lat": geom.get("lat"),
+        "lng": geom.get("lng")
+    }
+
+def _google_place_details(place_id: str, api_key: str):
+    if not (place_id and api_key):
+        return {}
+    try:
+        url = "https://maps.googleapis.com/maps/api/place/details/json"
+        fields = "opening_hours,price_level,website,url"
+        r = requests.get(url, params={"place_id": place_id, "fields": fields, "key": api_key}, timeout=12)
+        if not r.ok:
+            return {}
+        res = (r.json() or {}).get("result", {})
+        return {
+            "open_now": res.get("opening_hours", {}).get("open_now"),
+            "price_level": res.get("price_level"),
+            "website": res.get("website"),
+            "maps_url": res.get("url"),
+        }
+    except Exception:
+        return {}
+
+def _best_heritage_link(site_name: str, details: dict, kc_title: str, last_location_label: str):
+    """
+    Prefer official website; else Wikipedia search by site name (+ location label);
+    finally KC title search.
+    """
+    if details.get("website"):
+        return details["website"]
+    if site_name and last_location_label:
+        q = f"{site_name} {last_location_label}"
+        return f"https://en.wikipedia.org/w/index.php?search={requests.utils.quote(q)}"
+    if site_name:
+        return f"https://en.wikipedia.org/w/index.php?search={requests.utils.quote(site_name)}"
+    q = kc_title or "historic site"
+    return f"https://en.wikipedia.org/w/index.php?search={requests.utils.quote(q)}"
+
+def _solo_transition_prompt(current_level: str, target_level: str, kc_title: str, language: str = "es"):
+    current = (current_level or "").lower()
+    target = (target_level or "").lower()
+    title = kc_title or "el tema"
+
+    if language.startswith("es"):
+        if current.startswith("pre"):
+            return f"Explora el sitio y anota una idea clave sobre {title}. ¿Qué ves que te llama la atención?"
+        if current.startswith("uni") and "multi" in target:
+            return f"Lee el sitio y menciona al menos tres datos sobre {title}. ¿Qué sección respalda cada dato?"
+        if current.startswith("multi") and "relational" in target:
+            return f"Relaciona dos ideas del sitio sobre {title}. ¿Cómo se conectan entre sí?"
+        if current.startswith("relat") and "extended" in target:
+            return f"Elabora una explicación general sobre {title}. ¿Qué nueva idea puedes proponer?"
+        return f"Usa el sitio para avanzar hacia {target_level}: escribe 3–4 oraciones sobre {title}."
+    else:
+        if current.startswith("pre"):
+            return f"Explore the site and note one key idea about {title}. What stands out to you?"
+        if current.startswith("uni") and "multi" in target:
+            return f"Read the site and list at least three facts about {title}. Which section supports each fact?"
+        if current.startswith("multi") and "relational" in target:
+            return f"Connect two ideas from the site about {title}. How do they relate?"
+        if current.startswith("relat") and "extended" in target:
+            return f"Synthesize a big-picture explanation about {title}. What new idea can you propose?"
+        return f"Use the site to progress toward {target_level}: write 3–4 sentences about {title}."
 
 # ---------------------- Store History (POST) -------------------------- #
 @app.route("/store-history", methods=["POST"])
@@ -351,18 +479,11 @@ def store_history():
 def generate_reaction():
     """
     Returns:
-      {
-        kc_id, student_id,
-        location: { formatted, coordinates, lat, lng, timestamp, timezone },
-        nearest_site: { name, address, url, distance_m|null, open_status, fee_status },
-        weather: null OR { condition, temperature_f },
-        task: {
-          task_type: "Virtual"|"Indoor"|"Outdoor",
-          task_title, task_description,
-          link|null,
-          feasibility_notes
-        }
-      }
+      kc_id, student_id,
+      location: { formatted, coordinates, lat, lng, timestamp, timezone },
+      nearest_site: { name, address, url, distance_m|null, open_status, fee_status },
+      weather: null OR { condition, temperature_f },
+      task: { task_type, task_title, task_description, link|null, feasibility_notes }
     """
     data = request.get_json() or {}
     kc_id = data.get("kc_id")
@@ -391,13 +512,15 @@ def generate_reaction():
         "timezone": last_rec.get("timezone"),
     }
 
-    # 2) KC-driven keyword for relevant site search
-    kc = kc_store.get(kc_id, {})
-    kc_title = (kc.get("title") or "").strip()
-    kc_desc  = (kc.get("description") or "").strip()
-    keywords = kc_title if kc_title else (kc_desc if kc_desc else "cultural heritage")
+    # 2) Current SOLO, KC metadata
+    current_SOLO = last_rec.get("SOLO_level") or ""
+    kc_meta = kc_store.get(kc_id, {})
+    kc_title = (kc_meta.get("title") or "").strip()
+    kc_desc  = (kc_meta.get("description") or "").strip()
+    target_SOLO = (kc_meta.get("target_SOLO_level") or "").strip()
+    kc_city = (kc_meta.get("kc_city") or "").strip()  # optional, if provided in KC
 
-    # 3) Nearest relevant site via Google Places
+    # 3) Nearest relevant site (rank-by-distance) with optional city exclusion
     site_lat = site_lon = None
     site_name = "Unavailable"
     site_address = "Unavailable"
@@ -406,73 +529,55 @@ def generate_reaction():
     fee_status  = "unknown"   # "free"|"unknown"
 
     try:
-        if GOOGLE_API_KEY:
-            nearby_url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-            params = {
-                "location": f"{lat1},{lon1}",
-                "radius": 1500,          # 1.5 km cone
-                "keyword": keywords,
-                "key": GOOGLE_API_KEY
-            }
-            r = requests.get(nearby_url, params=params, timeout=12)
-            r.raise_for_status()
-            results = (r.json() or {}).get("results", [])
-            if results:
-                nearest = results[0]
-                site_lat = nearest["geometry"]["location"]["lat"]
-                site_lon = nearest["geometry"]["location"]["lng"]
-                site_name = nearest.get("name", "Unknown")
-                site_address = nearest.get("vicinity", "Unknown")
-                place_id = nearest.get("place_id")
-                site_url = f"https://www.google.com/maps/place/?q=place_id:{place_id}" if place_id else None
+        keywords = _build_site_keywords(kc_title, kc_desc)
+        nearest = _google_nearest_place(lat1, lon1, keywords, GOOGLE_API_KEY, exclude_city=kc_city or None)
+        if nearest:
+            site_lat = nearest["lat"]
+            site_lon = nearest["lng"]
+            site_name = nearest["name"]
+            site_address = nearest["address"]
 
-                # Optional enrichment: opening hours + price level
-                if place_id:
-                    details_url = "https://maps.googleapis.com/maps/api/place/details/json"
-                    d_params = {"place_id": place_id, "fields": "opening_hours,price_level", "key": GOOGLE_API_KEY}
-                    d = requests.get(details_url, params=d_params, timeout=12)
-                    if d.ok:
-                        dj = d.json() or {}
-                        res = dj.get("result", {})
-                        if isinstance(res.get("opening_hours", {}).get("open_now"), bool):
-                            open_status = "open" if res["opening_hours"]["open_now"] else "closed"
-                        if "price_level" in res:
-                            fee_status = "free" if res["price_level"] == 0 else "unknown"
+            details = _google_place_details(nearest["place_id"], GOOGLE_API_KEY)
+            if isinstance(details.get("open_now"), bool):
+                open_status = "open" if details["open_now"] else "closed"
+            if "price_level" in details and details["price_level"] == 0:
+                fee_status = "free"
+            site_url = details.get("website") or details.get("maps_url")
     except Exception as e:
-        app.logger.warning(f"Places API error: {e}")
-        site_lat = site_lon = None  # force virtual
+        app.logger.warning(f"Places search/details error: {e}")
+        site_lat = site_lon = None  # distance unknown
 
     # 4) Distance FIRST
     if site_lat is not None and site_lon is not None:
         distance_m = haversine(lat1, lon1, site_lat, site_lon)
     else:
-        distance_m = None  # unknown/no site
+        distance_m = None
 
     is_within_1km = (distance_m is not None) and (distance_m <= 1000)
-    app.logger.info(f"/generate-reaction student={student_id} kc={kc_id} latest=({lat1},{lon1}) "
-                    f"site=({site_lat},{site_lon}) distance={distance_m}")
+    app.logger.info(f"/generate-reaction student={student_id} kc={kc_id} "
+                    f"latest=({lat1},{lon1}) site=({site_lat},{site_lon}) distance={distance_m}")
 
-    # Helper: KC-relevant virtual link even without Places
-    def kc_virtual_link():
-        query = kc_title or kc_desc or "heritage"
-        return f"https://en.wikipedia.org/w/index.php?search={requests.utils.quote(query)}"
+    # Helper: best heritage link for virtual tasks
+    details_for_link = {"website": site_url} if site_url else {}
+    best_link = _best_heritage_link(site_name, details_for_link, kc_title, last_rec.get("location") or "")
 
     # 5) If distance unknown OR > 1 km → Virtual (skip weather/access)
     if (distance_m is None) or (not is_within_1km):
-        virtual_link = site_url or kc_virtual_link()
+        question = _solo_transition_prompt(current_SOLO, target_SOLO, kc_title or kc_desc, "es")
         task = {
             "task_type": "Virtual",
-            "task_title": "Exploración virtual del patrimonio",
+            "task_title": f"Exploración virtual: {kc_title or 'Patrimonio'}",
             "task_description": (
-                "Visita el sitio web y busca un dato que conecte con el tema del KC. "
-                "Escribe dos oraciones: (1) ¿Qué aprendiste nuevo? (2) ¿Cómo se relaciona con lo ya visto en clase?"
+                f"Visita el sitio web y responde: {question} "
+                "Incluye 1 evidencia (captura o cita del sitio) en tu respuesta."
             ),
-            "link": virtual_link,
+            "link": best_link,
             "feasibility_notes": (
                 f"Distance is {'unknown' if distance_m is None else int(distance_m)} m. "
-                "Al ser mayor a 1000 m o desconocida, se omiten verificaciones de clima y acceso y se asigna actividad virtual."
+                "Regla: al superar 1000 m (o sin sitio cercano), se omiten clima/acceso y se asigna tarea virtual."
             )
         }
+
         return jsonify({
             "kc_id": kc_id,
             "student_id": student_id,
@@ -490,79 +595,68 @@ def generate_reaction():
         }), 200
 
     # 6) Within 1 km → check weather & temperature, then decide task
-    condition, temp_f = get_weather(lat1, lon1)  # ("sunny"/"cloudy"/"rainy"/"stormy"/"unknown", temp in °F)
-
+    condition, temp_f = get_weather(lat1, lon1)
     bad_weather_or_hot       = (condition in {"rainy", "stormy"}) or (temp_f is not None and temp_f > 96)
     good_weather_and_not_hot = (condition in {"sunny", "clear", "cloudy"}) and (temp_f is not None and temp_f <= 96)
     site_is_open             = (open_status == "open")
     site_is_free             = (fee_status  == "free")
 
     if bad_weather_or_hot and site_is_open and site_is_free:
-        # A) Bad/hot AND open & free → Indoor
         task = {
             "task_type": "Indoor",
             "task_title": f"Exploración interior en {site_name}",
             "task_description": (
-                f"Entra a {site_name} ({site_address}) y observa un elemento simbólico (por ejemplo, un relieve o un vitral). "
-                "Escribe tres oraciones: qué ves, qué crees que significa y cómo se conecta con el tema del KC."
+                f"Entra a {site_name} ({site_address}). Busca un elemento que conecte con «{kc_title or kc_desc}» "
+                "y explica en 3 oraciones qué ves, qué significa y cómo se relaciona con el tema."
             ),
             "feasibility_notes": (
-                f"Within 1 km ({int(distance_m)} m). Weather='{condition}', "
-                f"temp={'unknown' if temp_f is None else f'{temp_f}°F'}. "
-                "Sitio abierto y gratuito; interior recomendado."
+                f"Within 1 km ({int(distance_m)} m). Clima='{condition}', "
+                f"temp={'unknown' if temp_f is None else f'{temp_f}°F'}. Sitio abierto y gratuito."
             )
         }
 
     elif good_weather_and_not_hot and (not site_is_open or not site_is_free):
-        # B) Good & ≤96°F AND (closed OR not free) → Outdoor
         task = {
             "task_type": "Outdoor",
             "task_title": f"Observación exterior de {site_name}",
             "task_description": (
-                f"Desde el exterior de {site_name}, dibuja o fotografía un rasgo visible (arco, torre, fachada). "
-                "Explica en dos oraciones cómo ese rasgo se relaciona con el tema del KC."
+                f"Desde el exterior de {site_name}, identifica dos rasgos visibles relacionados con «{kc_title or kc_desc}». "
+                "Describe su función y semejanza/diferencia en 3–4 oraciones."
             ),
             "feasibility_notes": (
-                f"Within 1 km ({int(distance_m)} m). Weather='{condition}', "
-                f"temp={'unknown' if temp_f is None else f'{temp_f}°F'} (≤ 96°F). "
-                "Interior no accesible (cerrado o con costo); actividad exterior."
+                f"Within 1 km ({int(distance_m)} m). Clima='{condition}', "
+                f"temp={'unknown' if temp_f is None else f'{temp_f}°F'} (≤96°F). Interior no accesible (cerrado o con costo)."
             )
         }
 
     elif good_weather_and_not_hot and site_is_open and site_is_free:
-        # C) Good & ≤96°F AND open & free → Outdoor
         task = {
             "task_type": "Outdoor",
             "task_title": f"Recorrido guiado al aire libre en {site_name}",
             "task_description": (
-                f"Camina alrededor de {site_name} y localiza dos detalles arquitectónicos. "
-                "Describe cómo cada detalle ayuda a entender el tema del KC y compara sus funciones."
+                f"Rodea {site_name}. Toma dos fotos/dibujos de detalles que expliquen «{kc_title or kc_desc}». "
+                "Compara su función y relación con el tema en 4 oraciones."
             ),
             "feasibility_notes": (
-                f"Within 1 km ({int(distance_m)} m). Weather='{condition}', "
-                f"temp={'unknown' if temp_f is None else f'{temp_f}°F'} (≤ 96°F). "
-                "Sitio abierto y gratuito; actividad exterior recomendada."
+                f"Within 1 km ({int(distance_m)} m). Clima='{condition}', "
+                f"temp={'unknown' if temp_f is None else f'{temp_f}°F'} (≤96°F). Sitio abierto y gratuito."
             )
         }
 
     else:
-        # D) Mixed/unknown → Virtual
-        def kc_virtual_link():
-            query = kc_title or kc_desc or "heritage"
-            return f"https://en.wikipedia.org/w/index.php?search={requests.utils.quote(query)}"
-        virtual_link = site_url or kc_virtual_link()
+        # Safe fallback: virtual with site-specific link
+        question = _solo_transition_prompt(current_SOLO, target_SOLO, kc_title or kc_desc, "es")
         task = {
             "task_type": "Virtual",
-            "task_title": "Exploración virtual del patrimonio (resguardo)",
+            "task_title": f"Exploración virtual (resguardo): {kc_title or 'Patrimonio'}",
             "task_description": (
-                "Visita el sitio web y localiza un elemento arquitectónico clave. "
-                "Responde: ¿qué función cumple y cómo se conecta con el tema del KC?"
+                f"Visita el sitio web y responde: {question} "
+                "Incluye 1 evidencia (captura o cita del sitio)."
             ),
-            "link": virtual_link,
+            "link": _best_heritage_link(site_name, {"website": site_url} if site_url else {}, kc_title, last_rec.get("location") or ""),
             "feasibility_notes": (
-                f"Within 1 km ({int(distance_m)} m), pero las condiciones no permiten seguridad o acceso suficiente "
-                f"(weather='{condition}', temp={temp_f}, open='{open_status}', fee='{fee_status}'). "
-                "Se recomienda actividad virtual."
+                f"Within 1 km ({int(distance_m)} m), pero condiciones insuficientes "
+                f"(clima='{condition}', temp={temp_f}, open='{open_status}', fee='{fee_status}')."
             )
         }
 
