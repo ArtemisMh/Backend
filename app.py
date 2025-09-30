@@ -356,18 +356,18 @@ def _google_place_details(place_id: str, api_key: str):
     except Exception:
         return {}
 
-def _best_heritage_link(site_name: str, details: dict, kc_title: str, last_location_label: str):
+def _best_heritage_link(resource_name: str, details: dict, kc_title: str, last_location_label: str):
     """
     Prefer official website; else Wikipedia search by site name (+ location label);
     finally KC title search.
     """
     if details.get("website"):
         return details["website"]
-    if site_name and last_location_label:
-        q = f"{site_name} {last_location_label}"
+    if resource_name and last_location_label:
+        q = f"{resource_name} {last_location_label}"
         return f"https://en.wikipedia.org/w/index.php?search={requests.utils.quote(q)}"
-    if site_name:
-        return f"https://en.wikipedia.org/w/index.php?search={requests.utils.quote(site_name)}"
+    if resource_name:
+        return f"https://en.wikipedia.org/w/index.php?search={requests.utils.quote(resource_name)}"
     q = kc_title or "educational topic"
     return f"https://en.wikipedia.org/w/index.php?search={requests.utils.quote(q)}"
 
@@ -492,7 +492,7 @@ def generate_reaction():
     Returns:
       kc_id, student_id,
       location: { formatted, coordinates, lat, lng, timestamp, timezone },
-      nearest_site: { name, address, url, distance_m|null, open_status, fee_status },
+      nearest_place: { name, address, url, distance_m|null, open_status, fee_status },
       weather: null OR { condition, temperature_f },
       task: { task_type, task_title, task_description, link|null, feasibility_notes }
     """
@@ -533,7 +533,7 @@ def generate_reaction():
 
     # 3) Nearest relevant site (rank-by-distance) with optional city exclusion
     site_lat = site_lon = None
-    site_name = "Unavailable"
+    resource_name = "Unavailable"
     site_address = "Unavailable"
     site_url = None
     open_status = "unknown"   # "open"|"closed"|"unknown"
@@ -545,7 +545,7 @@ def generate_reaction():
         if nearest:
             site_lat = nearest["lat"]
             site_lon = nearest["lng"]
-            site_name = nearest["name"]
+            resource_name = nearest["name"]
             site_address = nearest["address"]
 
             details = _google_place_details(nearest["place_id"], GOOGLE_API_KEY)
@@ -570,7 +570,7 @@ def generate_reaction():
 
     # Helper: best heritage link for virtual tasks
     details_for_link = {"website": site_url} if site_url else {}
-    best_link = _best_heritage_link(site_name, details_for_link, kc_title, last_rec.get("location") or "")
+    best_link = _best_heritage_link(resource_name, details_for_link, kc_title, last_rec.get("location") or "")
 
     # 5) If distance unknown OR > 1 km → Virtual (skip weather/access)
     if (distance_m is None) or (not is_within_1km):
@@ -593,8 +593,8 @@ def generate_reaction():
             "kc_id": kc_id,
             "student_id": student_id,
             "location": location_block,
-            "nearest_site": {
-                "name": site_name,
+            "nearest_place": {
+                "name": resource_name,
                 "address": site_address,
                 "url": site_url,
                 "distance_m": (None if distance_m is None else int(distance_m)),
@@ -615,9 +615,9 @@ def generate_reaction():
     if bad_weather_or_hot and site_is_open and site_is_free:
         task = {
             "task_type": "Indoor",
-            "task_title": f"Exploración interior en {site_name}",
+            "task_title": f"Exploración interior en {resource_name}",
             "task_description": (
-                f"Entra a {site_name} ({site_address}). Busca un elemento que conecte con «{kc_title or kc_desc}» "
+                f"Entra a {resource_name} ({site_address}). Busca un elemento que conecte con «{kc_title or kc_desc}» "
                 "y explica en 3 oraciones qué ves, qué significa y cómo se relaciona con el tema."
             ),
             "feasibility_notes": (
@@ -629,9 +629,9 @@ def generate_reaction():
     elif good_weather_and_not_hot and (not site_is_open or not site_is_free):
         task = {
             "task_type": "Outdoor",
-            "task_title": f"Observación exterior de {site_name}",
+            "task_title": f"Observación exterior de {resource_name}",
             "task_description": (
-                f"Desde el exterior de {site_name}, identifica dos rasgos visibles relacionados con «{kc_title or kc_desc}». "
+                f"Desde el exterior de {resource_name}, identifica dos rasgos visibles relacionados con «{kc_title or kc_desc}». "
                 "Describe su función y semejanza/diferencia en 3–4 oraciones."
             ),
             "feasibility_notes": (
@@ -643,9 +643,9 @@ def generate_reaction():
     elif good_weather_and_not_hot and site_is_open and site_is_free:
         task = {
             "task_type": "Outdoor",
-            "task_title": f"Recorrido guiado al aire libre en {site_name}",
+            "task_title": f"Recorrido guiado al aire libre en {resource_name}",
             "task_description": (
-                f"Rodea {site_name}. Toma dos notas o ejemplos de detalles que expliquen «{kc_title or kc_desc}». "
+                f"Rodea {resource_name}. Toma dos notas o ejemplos de detalles que expliquen «{kc_title or kc_desc}». "
                 "Compara su función y relación con el tema en 4 oraciones."
             ),
             "feasibility_notes": (
@@ -664,7 +664,7 @@ def generate_reaction():
                 f"Revisa el recurso en línea y responde: {question} "
                 "Incluye 1 evidencia (captura o cita del material)."
             ),
-            "link": _best_heritage_link(site_name, {"website": site_url} if site_url else {}, kc_title, last_rec.get("location") or ""),
+            "link": _best_heritage_link(resource_name, {"website": site_url} if site_url else {}, kc_title, last_rec.get("location") or ""),
             "feasibility_notes": (
                 f"Within 1 km ({int(distance_m)} m), pero condiciones insuficientes "
                 f"(clima='{condition}', temp={temp_f}, open='{open_status}', fee='{fee_status}')."
@@ -675,8 +675,8 @@ def generate_reaction():
         "kc_id": kc_id,
         "student_id": student_id,
         "location": location_block,
-        "nearest_site": {
-            "name": site_name,
+        "nearest_place": {
+            "name": resource_name,
             "address": site_address,
             "url": site_url,
             "distance_m": int(distance_m),
