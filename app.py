@@ -277,8 +277,8 @@ def _build_site_keywords(kc_title: str, kc_desc: str):
         base.append(kc_title)
     if kc_desc and kc_desc.lower() not in kc_title.lower():
         base.append(kc_desc)
-    base.append("historic OR heritage OR monument OR cathedral OR museum OR archaeological OR site")
-    return " ".join([b for b in base if b]).strip() or "historic site"
+    base.append("learning material OR educational resource OR topic")
+    return " ".join([b for b in base if b]).strip() or "learning material"
 
 def _nearby_rankby_distance(lat: float, lng: float, keyword: str, api_key: str):
     url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
@@ -308,7 +308,7 @@ def _google_nearest_place(lat: float, lng: float, keywords: str, api_key: str, e
 
     if not results:
         try:
-            results = _nearby_rankby_distance(lat, lng, "historic site OR monument OR museum OR cathedral OR archaeological", api_key)
+            results = _nearby_rankby_distance(lat, lng, "library OR school OR learning center OR educational resource", api_key)
         except Exception:
             results = []
 
@@ -367,7 +367,7 @@ def _best_heritage_link(site_name: str, details: dict, kc_title: str, last_locat
         return f"https://en.wikipedia.org/w/index.php?search={requests.utils.quote(q)}"
     if site_name:
         return f"https://en.wikipedia.org/w/index.php?search={requests.utils.quote(site_name)}"
-    q = kc_title or "historic site"
+    q = kc_title or "educational topic"
     return f"https://en.wikipedia.org/w/index.php?search={requests.utils.quote(q)}"
 
 def _solo_transition_prompt(current_level: str, target_level: str, kc_title: str, language: str = "es"):
@@ -377,7 +377,7 @@ def _solo_transition_prompt(current_level: str, target_level: str, kc_title: str
 
     if language.startswith("es"):
         if current.startswith("pre"):
-            return f"Explora el sitio y anota una idea clave sobre {title}. ¿Qué ves que te llama la atención?"
+            return f"Explora el recurso y anota una idea clave sobre {title}. ¿Qué ves que te llama la atención?"
         if current.startswith("uni") and "multi" in target:
             return f"Lee el sitio y menciona al menos tres datos sobre {title}. ¿Qué sección respalda cada dato?"
         if current.startswith("multi") and "relational" in target:
@@ -387,14 +387,14 @@ def _solo_transition_prompt(current_level: str, target_level: str, kc_title: str
         return f"Usa el sitio para avanzar hacia {target_level}: escribe 3–4 oraciones sobre {title}."
     else:
         if current.startswith("pre"):
-            return f"Explore the site and note one key idea about {title}. What stands out to you?"
+            return f"Explore the resource and note one key idea about {title}. What stands out to you?"
         if current.startswith("uni") and "multi" in target:
-            return f"Read the site and list at least three facts about {title}. Which section supports each fact?"
+            return f"Read the resource and list at least three facts about {title}. Which section supports each fact?"
         if current.startswith("multi") and "relational" in target:
-            return f"Connect two ideas from the site about {title}. How do they relate?"
+            return f"Connect two ideas from the resource about {title}. How do they relate?"
         if current.startswith("relat") and "extended" in target:
             return f"Synthesize a big-picture explanation about {title}. What new idea can you propose?"
-        return f"Use the site to progress toward {target_level}: write 3–4 sentences about {title}."
+        return f"Use the resource to progress toward {target_level}: write 3–4 sentences about {title}."
 
 # ---------------------- Store History (POST) -------------------------- #
 @app.route("/store-history", methods=["POST"])
@@ -501,7 +501,7 @@ def generate_reaction():
             last_rec = rec
             break
     if lat1 is None or lon1 is None or last_rec is None:
-        return jsonify({"error": "Student coordinates not found in history for the given kc_id and student_id."}), 400
+        return jsonify({"error": "Student coordinates not found in the history for the given kc_id and student_id."}), 400
 
     location_block = {
         "formatted": last_rec.get("location"),
@@ -566,15 +566,15 @@ def generate_reaction():
         question = _solo_transition_prompt(current_SOLO, target_SOLO, kc_title or kc_desc, "es")
         task = {
             "task_type": "Virtual",
-            "task_title": f"Exploración virtual: {kc_title or 'Patrimonio'}",
+            "task_title": f"Exploración virtual: {kc_title or 'material'}",
             "task_description": (
-                f"Visita el sitio web y responde: {question} "
-                "Incluye 1 evidencia (captura o cita del sitio) en tu respuesta."
+                f"Revisa el recurso en línea y responde: {question} "
+                "Incluye 1 evidencia (captura o cita del material) en tu respuesta."
             ),
             "link": best_link,
             "feasibility_notes": (
                 f"Distance is {'unknown' if distance_m is None else int(distance_m)} m. "
-                "Regla: al superar 1000 m (o sin sitio cercano), se omiten clima/acceso y se asigna tarea virtual."
+                "Regla: al superar 1000 m (o sin recurso cercano), se omiten clima/acceso y se asigna tarea virtual."
             )
         }
 
@@ -611,7 +611,7 @@ def generate_reaction():
             ),
             "feasibility_notes": (
                 f"Within 1 km ({int(distance_m)} m). Clima='{condition}', "
-                f"temp={'unknown' if temp_f is None else f'{temp_f}°F'}. Sitio abierto y gratuito."
+                f"temp={'unknown' if temp_f is None else f'{temp_f}°F'}. Recurso accesible y gratuito."
             )
         }
 
@@ -634,12 +634,12 @@ def generate_reaction():
             "task_type": "Outdoor",
             "task_title": f"Recorrido guiado al aire libre en {site_name}",
             "task_description": (
-                f"Rodea {site_name}. Toma dos fotos/dibujos de detalles que expliquen «{kc_title or kc_desc}». "
+                f"Rodea {site_name}. Toma dos notas o ejemplos de detalles que expliquen «{kc_title or kc_desc}». "
                 "Compara su función y relación con el tema en 4 oraciones."
             ),
             "feasibility_notes": (
                 f"Within 1 km ({int(distance_m)} m). Clima='{condition}', "
-                f"temp={'unknown' if temp_f is None else f'{temp_f}°F'} (≤96°F). Sitio abierto y gratuito."
+                f"temp={'unknown' if temp_f is None else f'{temp_f}°F'} (≤96°F). Recurso accesible y gratuito."
             )
         }
 
@@ -648,10 +648,10 @@ def generate_reaction():
         question = _solo_transition_prompt(current_SOLO, target_SOLO, kc_title or kc_desc, "es")
         task = {
             "task_type": "Virtual",
-            "task_title": f"Exploración virtual (resguardo): {kc_title or 'Patrimonio'}",
+            "task_title": f"Exploración virtual (resguardo): {kc_title or 'material'}",
             "task_description": (
-                f"Visita el sitio web y responde: {question} "
-                "Incluye 1 evidencia (captura o cita del sitio)."
+                f"Revisa el recurso en línea y responde: {question} "
+                "Incluye 1 evidencia (captura o cita del material)."
             ),
             "link": _best_heritage_link(site_name, {"website": site_url} if site_url else {}, kc_title, last_rec.get("location") or ""),
             "feasibility_notes": (
