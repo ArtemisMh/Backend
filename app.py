@@ -144,7 +144,8 @@ def analyze_response():
         "educational_grade": educational_grade_text,
         "SOLO_level": solo_level,
         "justification": justification,
-        "misconceptions": None
+        "misconceptions": None,
+        "approved": False   # always start unapproved
     }), 200
 
 # ---------------------- Utilities ------------------------------------ #
@@ -408,6 +409,14 @@ def store_history():
     data = request.get_json() or {}
     app.logger.info(f"/store-history payload: {data}")
 
+    # Check approval first
+    approved = data.get("approved")
+    if not approved:
+        return jsonify({
+            "error": "Teacher approval required before storing analysis",
+            "hint": "Resend with 'approved': true once verified by a teacher."
+        }), 400
+
     # Required core fields
     student_id = data.get("student_id")
     kc_id = data.get("kc_id")
@@ -453,7 +462,8 @@ def store_history():
         "educational_grade": educational_grade,
         "lat": lat,
         "lng": lng,
-        "timezone": tz_final
+        "timezone": tz_final,
+        "approved": True
     }
 
     # Persist in-memory
@@ -469,7 +479,8 @@ def store_history():
             "timezone": tz_final,
             "location": record["location"],
             "lat": lat,
-            "lng": lng
+            "lng": lng,
+            "approved": True
         }
     }), 200
 
