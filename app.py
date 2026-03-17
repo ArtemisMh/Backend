@@ -33,49 +33,44 @@ def submit_kc():
     data = request.get_json() or {}
     kc_id = data.get("kc_id")
 
+    app.logger.info(f"/submit_kc payload received: {data}")
+
     # Require teacher approval before storing
     if not data.get("approved", False):
+        app.logger.warning("KC not submitted: approval required.")
         return jsonify({
             "status": "error",
             "message": "KC not submitted: approval required."
         }), 400
 
-    # Fallback auto-ID if GPT didn’t provide it
+    # Require explicit KC ID; do not auto-generate
     if not kc_id:
-        kc_id = f"KC_{str(uuid.uuid4())[:8]}"
-        data["kc_id"] = kc_id
+        app.logger.warning("KC not submitted: kc_id is required.")
+        return jsonify({
+            "status": "error",
+            "message": "kc_id is required."
+        }), 400
     
-    kc_store[kc_id] = data
-    print(f"KC stored: {kc_id}")
-    app.logger.info(f"KC stored: {kc_id}")
+    stored_kc = {
+        "kc_id": kc_id,
+        "title": data.get("title"),
+        "kc_description": data.get("kc_description"),
+        "target_SOLO_level": data.get("target_SOLO_level"),
+        "related_learning_activity_id": data.get("related_learning_activity_id"),
+        "SOLO_level_mastery_examples": data.get("SOLO_level_mastery_examples"),
+        "media_context": data.get("media_context"),
+    }
+
+    kc_store[kc_id] = stored_kc
+    app.logger.info(f"KC stored successfully: {kc_id}")
+    app.logger.info(f"Stored KC object: {stored_kc}")
+
     return jsonify({
         "status": "success",
         "message": f"Knowledge component {kc_id} received",
-        "kc": data
+        "kc": stored_kc
     }), 200
 
-  
-# fetch KC metadata from backend (shared across Analyze/React)
-@app.route("/get_kc", methods=["GET"])
-def get_kc():
-    kc_id = request.args.get("kc_id")
-    if not kc_id:
-        return jsonify({"error": "kc_id parameter is required"}), 400
-
-    kc_data = kc_store.get(kc_id)
-    if not kc_data:
-        return jsonify({"error": f"KC with ID {kc_id} not found"}), 404
-
-    # Return only key metadata fields
-    return jsonify({
-        "kc_id": kc_data.get("kc_id"),
-        "title": kc_data.get("title"),
-        "kc_description": kc_data.get("kc_description"),
-        "target_SOLO_level": kc_data.get("target_SOLO_level"),
-        "related_learning_activity_id": kc_data.get("related_learning_activity_id"),
-        "SOLO_level_mastery_examples": kc_data.get("SOLO_level_mastery_examples"),
-        "media_context": kc_data.get("media_context"),
-    }), 200
 
 @app.route("/list_kcs", methods=["GET"])
 def list_kcs():
@@ -89,9 +84,13 @@ def submit_activity():
 
     app.logger.info(f"/submit_activity payload received: {data}")
 
-    # Fallback auto-ID
+    # Require explicit learning activity ID; do not auto-generate
     if not learning_activity_id:
-        learning_activity_id = f"LA_{str(uuid.uuid4())[:8]}"
+        app.logger.warning("Learning activity not submitted: learning_activity_id is required.")
+        return jsonify({
+            "status": "error",
+            "message": "learning_activity_id is required."
+        }), 400
 
     stored_activity = {
         "learning_activity_id": learning_activity_id,
@@ -116,6 +115,27 @@ def list_activities():
         "activities": list(activity_store.values())
     }), 200
 
+
+# fetch KC metadata from backend (shared across Analyze/React)
+@app.route("/get_kc", methods=["GET"])
+def get_kc():
+    kc_id = request.args.get("kc_id")
+    if not kc_id:
+        return jsonify({"error": "kc_id parameter is required"}), 400
+
+    kc_data = kc_store.get(kc_id)
+    if not kc_data:
+        return jsonify({"error": f"KC with ID {kc_id} not found"}), 404
+
+    return jsonify({
+        "kc_id": kc_data.get("kc_id"),
+        "title": kc_data.get("title"),
+        "kc_description": kc_data.get("kc_description"),
+        "target_SOLO_level": kc_data.get("target_SOLO_level"),
+        "related_learning_activity_id": kc_data.get("related_learning_activity_id"),
+        "SOLO_level_mastery_examples": kc_data.get("SOLO_level_mastery_examples"),
+        "media_context": kc_data.get("media_context"),
+    }), 200
 
 # ---------------------- Student History (GET) ------------------------- #    
 @app.route("/get-student-history", methods=["GET"])
