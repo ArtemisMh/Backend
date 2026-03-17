@@ -58,32 +58,17 @@ def submit_kc():
     print(f"KC stored: {kc_id}")
     app.logger.info(f"KC stored: {kc_id}")
 
+    response_kc = {
+        **stored_kc,
+        "SOLO_level_mastery_examples": data.get("SOLO_level_mastery_examples")
+    }
+
     return jsonify({
         "status": "success",
         "message": f"Knowledge component {kc_id} received",
-        "kc": stored_kc
+        "kc": response_kc
     }), 200
 
-# fetch KC metadata from backend (shared across Analyze/React)
-@app.route("/get_kc", methods=["GET"])
-def get_kc():
-    kc_id = request.args.get("kc_id")
-    if not kc_id:
-        return jsonify({"error": "kc_id parameter is required"}), 400
-
-    kc_data = kc_store.get(kc_id)
-    if not kc_data:
-        return jsonify({"error": f"KC with ID {kc_id} not found"}), 404
-
-    # Return only key metadata fields
-    return jsonify({
-        "kc_id": kc_data.get("kc_id"),
-        "title": kc_data.get("title"),
-        "kc_description": kc_data.get("kc_description"),
-        "target_SOLO_level": kc_data.get("target_SOLO_level"),
-        "related_learning_activity_id": kc_data.get("related_learning_activity_id"),
-        "media_context": kc_data.get("media_context"),
-    }), 200
 
 @app.route("/list_kcs", methods=["GET"])
 def list_kcs():
@@ -122,6 +107,28 @@ def list_activities():
         "activities": list(activity_store.values())
     }), 200
 
+
+# ---------------------- KC History (GET) ------------------------- #    
+# fetch KC metadata from backend (shared across Analyze/React)
+@app.route("/get_kc", methods=["GET"])
+def get_kc():
+    kc_id = request.args.get("kc_id")
+    if not kc_id:
+        return jsonify({"error": "kc_id parameter is required"}), 400
+
+    kc_data = kc_store.get(kc_id)
+    if not kc_data:
+        return jsonify({"error": f"KC with ID {kc_id} not found"}), 404
+
+    # Return only key metadata fields
+    return jsonify({
+        "kc_id": kc_data.get("kc_id"),
+        "title": kc_data.get("title"),
+        "kc_description": kc_data.get("kc_description"),
+        "target_SOLO_level": kc_data.get("target_SOLO_level"),
+        "related_learning_activity_id": kc_data.get("related_learning_activity_id"),
+        "media_context": kc_data.get("media_context"),
+    }), 200
 
 # ---------------------- Student History (GET) ------------------------- #    
 @app.route("/get-student-history", methods=["GET"])
