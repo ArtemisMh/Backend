@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import logging
 import uuid
 import requests
 import os
@@ -11,6 +12,10 @@ import math
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})  # adjust/restrict origins as needed
 
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+app.logger.setLevel(logging.DEBUG)
+app.logger.propagate = True
 
 # -------------------------- Environment keys --------------------------- #
 OPENCAGE_API_KEY = os.getenv("OPENCAGE_API_KEY")
