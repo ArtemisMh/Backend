@@ -19,6 +19,7 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") # Only for timezone lookup
 
 # --------------------------- In-memory stores -------------------------- #
 kc_store = {}
+activity_store = {}
 student_history = []
 
 # ---------------------- Root route — health check ---------------------- #
@@ -27,7 +28,6 @@ def home():
     return jsonify({"status": "success", "message": "Backend is live!"})
 
 # ---------------------- Learning Design Agent ------------------------- #
-
 @app.route("/submit_kc", methods=["POST"])
 def submit_kc():
     data = request.get_json() or {}
@@ -43,15 +43,25 @@ def submit_kc():
     # Fallback auto-ID if GPT didn’t provide it
     if not kc_id:
         kc_id = f"KC_{str(uuid.uuid4())[:8]}"
-        data["kc_id"] = kc_id
+
+    # Store only the KC metadata needed by downstream agents
+    stored_kc = {
+        "kc_id": kc_id,
+        "title": data.get("title"),
+        "kc_description": data.get("kc_description"),
+        "target_SOLO_level": data.get("target_SOLO_level"),
+        "related_learning_activity_id": data.get("related_learning_activity_id"),
+        "media_context": data.get("media_context"),
+    }
     
-    kc_store[kc_id] = data
+    kc_store[kc_id] = stored_kc
     print(f"KC stored: {kc_id}")
     app.logger.info(f"KC stored: {kc_id}")
+
     return jsonify({
         "status": "success",
         "message": f"Knowledge component {kc_id} received",
-        "kc": data
+        "kc": stored_kc
     }), 200
 
 # fetch KC metadata from backend (shared across Analyze/React)
@@ -69,12 +79,49 @@ def get_kc():
     return jsonify({
         "kc_id": kc_data.get("kc_id"),
         "title": kc_data.get("title"),
-        "target_SOLO_level": kc_data.get("target_SOLO_level")
+        "kc_description": kc_data.get("kc_description"),
+        "target_SOLO_level": kc_data.get("target_SOLO_level"),
+        "related_learning_activity_id": kc_data.get("related_learning_activity_id"),
+        "media_context": kc_data.get("media_context"),
     }), 200
 
 @app.route("/list_kcs", methods=["GET"])
 def list_kcs():
     return jsonify({"kcs": list(kc_store.values())}), 200
+
+
+@app.route("/submit_activity", methods=["POST"])
+def submit_activity():
+    data = request.get_json() or {}
+    learning_activity_id = data.get("learning_activity_id")
+
+    # Fallback auto-ID
+    if not learning_activity_id:
+        learning_activity_id = f"LA_{str(uuid.uuid4())[:8]}"
+
+    stored_activity = {
+        "learning_activity_id": learning_activity_id,
+        "learning_activity_title": data.get("learning_activity_title"),
+        "related_kc_ids": data.get("related_kc_ids", []),
+    }
+
+    activity_store[learning_activity_id] = stored_activity
+    print(f"Learning activity stored: {learning_activity_id}")
+    app.logger.info(f"Learning activity stored: {learning_activity_id}")
+
+    return jsonify({
+        "status": "success",
+        "message": f"Learning activity {learning_activity_id} received",
+        "activity": stored_activity
+    }), 200
+
+
+@app.route("/list_activities", methods=["GET"])
+def list_activities():
+    return jsonify({
+        "activities": list(activity_store.values())
+    }), 200
+
 
 # ---------------------- Student History (GET) ------------------------- #    
 @app.route("/get-student-history", methods=["GET"])
@@ -106,7 +153,6 @@ def get_student_history():
             "lng": record.get("lng"),
             "kc_id": record.get("kc_id"),
             "student_id": record.get("student_id"),
-            "educational_grade": record.get("educational_grade"),
             "SOLO_level": record.get("SOLO_level"),
             "student_response": record.get("student_response"),
             "justification": record.get("justification"),
@@ -122,7 +168,6 @@ def analyze_response():
     data = request.get_json() or {}
     kc_id = data.get("kc_id")
     student_id = data.get("student_id")
-    educational_grade_text = data.get("educational_grade")  # keep original casing
     response_text = (data.get("student_response") or "").lower()
 
     if "meaning" in response_text or "symbol" in response_text:
@@ -141,7 +186,6 @@ def analyze_response():
     return jsonify({
         "kc_id": kc_id,
         "student_id": student_id,
-        "educational_grade": educational_grade_text,
         "SOLO_level": solo_level,
         "justification": justification,
         "misconceptions": None,
@@ -430,7 +474,6 @@ def store_history():
     justification = data.get("justification")
     misconceptions = data.get("misconceptions")
     target_SOLO_level = data.get("target_SOLO_level")
-    educational_grade = data.get("educational_grade")
 
     # Normalize/resolve coordinates and location label
     lat, lng, formatted_loc, tz_name_from_geo = _ensure_coordinates_and_location(data)
@@ -459,7 +502,6 @@ def store_history():
         "justification": justification,
         "misconceptions": misconceptions,
         "target_SOLO_level": target_SOLO_level,
-        "educational_grade": educational_grade,
         "lat": lat,
         "lng": lng,
         "timezone": tz_final,
