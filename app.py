@@ -142,7 +142,24 @@ def get_kc():
         "media_context": kc_data.get("media_context"),
     }), 200
 
-# ---------------------- Student History (GET) ------------------------- #    
+# ---------------------- Learning Activity Metadata (GET) ---------------------- #
+@app.route("/get_activity", methods=["GET"])
+def get_activity():
+    learning_activity_id = request.args.get("learning_activity_id")
+    if not learning_activity_id:
+        return jsonify({"error": "learning_activity_id parameter is required"}), 400
+
+    activity_data = activity_store.get(learning_activity_id)
+    if not activity_data:
+        return jsonify({"error": f"Learning activity with ID {learning_activity_id} not found"}), 404
+
+    return jsonify({
+        "learning_activity_id": activity_data.get("learning_activity_id"),
+        "learning_activity_title": activity_data.get("learning_activity_title"),
+        "related_kc_ids": activity_data.get("related_kc_ids", [])
+    }), 200
+
+# ---------------------- Student History (GET) ------------------------- #
 @app.route("/get-student-history", methods=["GET"])
 def get_student_history():
     student_id = request.args.get("student_id")
@@ -152,12 +169,10 @@ def get_student_history():
     if not student_id:
         return jsonify({"error": "student_id is required"}), 400
 
-    # Filter stored records
     results = [r for r in student_history if r.get("student_id") == student_id]
     if kc_id:
         results = [r for r in results if r.get("kc_id") == kc_id]
 
-    # Sort by timestamp (ISO strings sort lexicographically if consistent)
     results_sorted = sorted(results, key=lambda r: r.get("timestamp", ""), reverse=True)
     if latest and results_sorted:
         results_sorted = [results_sorted[0]]
@@ -174,6 +189,9 @@ def get_student_history():
             "student_id": record.get("student_id"),
             "SOLO_level": record.get("SOLO_level"),
             "student_response": record.get("student_response"),
+            "student_response_type": record.get("student_response_type"),
+            "student_response_reference": record.get("student_response_reference"),
+            "student_response_transcription": record.get("student_response_transcription"),
             "justification": record.get("justification"),
             "misconceptions": record.get("misconceptions"),
             "target_SOLO_level": record.get("target_SOLO_level")
@@ -185,30 +203,61 @@ def get_student_history():
 @app.route("/analyze-response", methods=["POST"])
 def analyze_response():
     data = request.get_json() or {}
+
     kc_id = data.get("kc_id")
     student_id = data.get("student_id")
-    response_text = (data.get("student_response") or "").lower()
 
-    if "meaning" in response_text or "symbol" in response_text:
+    student_response = (data.get("student_response") or "").strip()
+    student_response_type = (data.get("student_response_type") or "text").strip().lower()
+    student_response_reference = data.get("student_response_reference")
+    student_response_transcription = (data.get("student_response_transcription") or "").strip()
+
+    if not kc_id or not student_id:
+        return jsonify({"error": "kc_id and student_id are required"}), 400
+
+    if student_response_type not in {"text", "image", "pdf"}:
+        return jsonify({"error": "student_response_type must be one of: text, image, pdf"}), 400
+
+    # Use text if available; otherwise fall back to transcription
+    response_text = (student_response or student_response_transcription).lower().strip()
+
+    # Basic placeholder logic only.
+    # The LLM should do the real classification using /get_kc and /get_activity.
+    if not response_text:
+        solo_level = "Pre-structural"
+        justification = "No readable or transcribed student response was provided."
+        misconceptions = "Response is blank, unreadable, or insufficient to assess."
+    elif any(phrase in response_text for phrase in ["i don't know", "i dont know", "no sé", "no se", "i don't remember", "no recuerdo"]):
+        solo_level = "Pre-structural"
+        justification = "The response explicitly indicates lack of knowledge or recall."
+        misconceptions = "No evidence of relevant understanding is shown."
+    elif "meaning" in response_text or "symbol" in response_text:
         solo_level = "Relational"
-        justification = "Student connects elements to symbolic interpretation."
+        justification = "The student connects elements to symbolic interpretation."
+        misconceptions = None
     elif any(word in response_text for word in ["red", "blue", "window", "light"]):
         solo_level = "Multi-structural"
-        justification = "Student lists multiple relevant features."
-    elif len(response_text.strip()) > 0:
+        justification = "The student mentions several relevant aspects, but without integrating them."
+        misconceptions = "Relationships between the identified aspects are not explained."
+    elif len(response_text) > 0:
         solo_level = "Uni-structural"
-        justification = "Student mentions one relevant detail."
+        justification = "The student mentions at least one relevant aspect, but the response remains limited."
+        misconceptions = "The response does not yet show multiple connected ideas."
     else:
         solo_level = "Pre-structural"
-        justification = "Student response is incomplete or off-topic."
+        justification = "The response is incomplete or off-topic."
+        misconceptions = "No clear relevant reasoning is demonstrated."
 
     return jsonify({
         "kc_id": kc_id,
         "student_id": student_id,
+        "student_response_type": student_response_type,
+        "student_response_reference": student_response_reference,
+        "student_response_transcription": student_response_transcription if student_response_transcription else None,
         "SOLO_level": solo_level,
         "justification": justification,
-        "misconceptions": None,
-        "approved": False   # always start unapproved
+        "misconceptions": misconceptions,
+        "approved": False
     }), 200
 
 # ---------------------- Utilities ------------------------------------ #
@@ -468,11 +517,11 @@ def store_history():
       - Accepts numeric lat/lng, or a "lat,lng" string in 'location', or a free-text 'location'.
       - If free-text, geocodes via OpenCage to get lat/lng and a formatted label.
       - Derives timezone from geocoding annotations when available; computes local timestamp.
+      - Supports multimodal student submissions: text, image, or pdf.
     """
     data = request.get_json() or {}
     app.logger.info(f"/store-history payload: {data}")
 
-    # Check approval first
     approved = data.get("approved")
     if not approved:
         return jsonify({
@@ -480,7 +529,6 @@ def store_history():
             "hint": "Resend with 'approved': true once verified by a teacher."
         }), 400
 
-    # Required core fields
     student_id = data.get("student_id")
     kc_id = data.get("kc_id")
     SOLO_level = data.get("SOLO_level")
@@ -488,13 +536,39 @@ def store_history():
     if not student_id or not kc_id or not SOLO_level:
         return jsonify({"error": "student_id, kc_id, and SOLO_level are required"}), 400
 
-    # Optional fields the Analyze Layer Agent may include
     student_response = data.get("student_response")
+    student_response_type = (data.get("student_response_type") or "text").strip().lower()
+    student_response_reference = data.get("student_response_reference")
+    student_response_transcription = data.get("student_response_transcription")
+
+    if student_response_type not in {"text", "image", "pdf"}:
+        return jsonify({"error": "student_response_type must be one of: text, image, pdf"}), 400
+
+    # Optional fields the Analyze Layer Agent may include
     justification = data.get("justification")
     misconceptions = data.get("misconceptions")
     target_SOLO_level = data.get("target_SOLO_level")
 
-    # Normalize/resolve coordinates and location label
+    if not target_SOLO_level:
+        return jsonify({"error": "target_SOLO_level is required"}), 400
+    if justification is None:
+        return jsonify({"error": "justification is required"}), 400
+    if misconceptions is None:
+        return jsonify({"error": "misconceptions is required"}), 400
+
+    # Require at least one response representation
+    if not any([
+        student_response,
+        student_response_reference,
+        student_response_transcription
+    ]):
+        return jsonify({
+            "error": (
+                "At least one of student_response, student_response_reference, "
+                "or student_response_transcription is required."
+            )
+        }), 400
+
     lat, lng, formatted_loc, tz_name_from_geo = _ensure_coordinates_and_location(data)
     app.logger.info(f"Normalized -> lat={lat}, lng={lng}, formatted='{formatted_loc}', tz='{tz_name_from_geo}'")
 
@@ -507,10 +581,8 @@ def store_history():
             )
         }), 400
 
-    # Timezone + timestamp: prefer geocoded timezone; otherwise UTC
     timestamp_iso, tz_final = _now_in_timezone(tz_name_from_geo)
 
-    # Build the record
     record = {
         "timestamp": timestamp_iso,
         "location": formatted_loc or data.get("location"),
@@ -518,6 +590,9 @@ def store_history():
         "student_id": student_id,
         "SOLO_level": SOLO_level,
         "student_response": student_response,
+        "student_response_type": student_response_type,
+        "student_response_reference": student_response_reference,
+        "student_response_transcription": student_response_transcription,
         "justification": justification,
         "misconceptions": misconceptions,
         "target_SOLO_level": target_SOLO_level,
@@ -527,7 +602,6 @@ def store_history():
         "approved": True
     }
 
-    # Persist in-memory
     student_history.append(record)
 
     return jsonify({
@@ -536,12 +610,15 @@ def store_history():
             "student_id": student_id,
             "kc_id": kc_id,
             "SOLO_level": SOLO_level,
+            "approved": True,
             "timestamp": timestamp_iso,
             "timezone": tz_final,
             "location": record["location"],
             "lat": lat,
             "lng": lng,
-            "approved": True
+            "student_response_type": student_response_type,
+            "student_response_reference": student_response_reference,
+            "student_response_transcription": student_response_transcription
         }
     }), 200
 
