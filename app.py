@@ -33,11 +33,8 @@ def submit_kc():
     data = request.get_json() or {}
     kc_id = data.get("kc_id")
 
-    app.logger.info(f"/submit_kc payload received: {data}")
-
     # Require teacher approval before storing
     if not data.get("approved", False):
-        app.logger.warning("KC not submitted: approval required.")
         return jsonify({
             "status": "error",
             "message": "KC not submitted: approval required."
@@ -46,72 +43,18 @@ def submit_kc():
     # Fallback auto-ID if GPT didn’t provide it
     if not kc_id:
         kc_id = f"KC_{str(uuid.uuid4())[:8]}"
-
-    # Store only the KC metadata needed by downstream agents
-    stored_kc = {
-        "kc_id": kc_id,
-        "title": data.get("title"),
-        "kc_description": data.get("kc_description"),
-        "target_SOLO_level": data.get("target_SOLO_level"),
-        "related_learning_activity_id": data.get("related_learning_activity_id"),
-        "SOLO_level_mastery_examples": data.get("SOLO_level_mastery_examples"),
-        "media_context": data.get("media_context"),
-    }
+        data["kc_id"] = kc_id
     
-    kc_store[kc_id] = stored_kc
-
-    app.logger.info(f"KC stored successfully: {kc_id}")
-    app.logger.info(f"Stored KC object: {stored_kc}")
-
+    kc_store[kc_id] = data
     print(f"KC stored: {kc_id}")
     app.logger.info(f"KC stored: {kc_id}")
-
     return jsonify({
         "status": "success",
         "message": f"Knowledge component {kc_id} received",
-        "kc": stored_kc
+        "kc": data
     }), 200
 
-
-@app.route("/list_kcs", methods=["GET"])
-def list_kcs():
-    return jsonify({"kcs": list(kc_store.values())}), 200
-
-
-@app.route("/submit_activity", methods=["POST"])
-def submit_activity():
-    data = request.get_json() or {}
-    learning_activity_id = data.get("learning_activity_id")
-
-    # Fallback auto-ID
-    if not learning_activity_id:
-        learning_activity_id = f"LA_{str(uuid.uuid4())[:8]}"
-
-    stored_activity = {
-        "learning_activity_id": learning_activity_id,
-        "learning_activity_title": data.get("learning_activity_title"),
-        "related_kc_ids": data.get("related_kc_ids", []),
-    }
-
-    activity_store[learning_activity_id] = stored_activity
-    print(f"Learning activity stored: {learning_activity_id}")
-    app.logger.info(f"Learning activity stored: {learning_activity_id}")
-
-    return jsonify({
-        "status": "success",
-        "message": f"Learning activity {learning_activity_id} received",
-        "activity": stored_activity
-    }), 200
-
-
-@app.route("/list_activities", methods=["GET"])
-def list_activities():
-    return jsonify({
-        "activities": list(activity_store.values())
-    }), 200
-
-
-# ---------------------- KC History (GET) ------------------------- #    
+  
 # fetch KC metadata from backend (shared across Analyze/React)
 @app.route("/get_kc", methods=["GET"])
 def get_kc():
@@ -133,6 +76,46 @@ def get_kc():
         "SOLO_level_mastery_examples": kc_data.get("SOLO_level_mastery_examples"),
         "media_context": kc_data.get("media_context"),
     }), 200
+
+@app.route("/list_kcs", methods=["GET"])
+def list_kcs():
+    return jsonify({"kcs": list(kc_store.values())}), 200
+
+
+@app.route("/submit_activity", methods=["POST"])
+def submit_activity():
+    data = request.get_json() or {}
+    learning_activity_id = data.get("learning_activity_id")
+
+    app.logger.info(f"/submit_activity payload received: {data}")
+
+    # Fallback auto-ID
+    if not learning_activity_id:
+        learning_activity_id = f"LA_{str(uuid.uuid4())[:8]}"
+
+    stored_activity = {
+        "learning_activity_id": learning_activity_id,
+        "learning_activity_title": data.get("learning_activity_title"),
+        "related_kc_ids": data.get("related_kc_ids", []),
+    }
+
+    activity_store[learning_activity_id] = stored_activity
+    app.logger.info(f"Learning activity stored: {learning_activity_id}")
+    app.logger.info(f"Stored activity object: {stored_activity}")
+
+    return jsonify({
+        "status": "success",
+        "message": f"Learning activity {learning_activity_id} received",
+        "activity": stored_activity
+    }), 200
+
+
+@app.route("/list_activities", methods=["GET"])
+def list_activities():
+    return jsonify({
+        "activities": list(activity_store.values())
+    }), 200
+
 
 # ---------------------- Student History (GET) ------------------------- #    
 @app.route("/get-student-history", methods=["GET"])
