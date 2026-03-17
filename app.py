@@ -33,8 +33,11 @@ def submit_kc():
     data = request.get_json() or {}
     kc_id = data.get("kc_id")
 
+    app.logger.info(f"/submit_kc payload received: {data}")
+
     # Require teacher approval before storing
     if not data.get("approved", False):
+        app.logger.warning("KC not submitted: approval required.")
         return jsonify({
             "status": "error",
             "message": "KC not submitted: approval required."
@@ -51,22 +54,22 @@ def submit_kc():
         "kc_description": data.get("kc_description"),
         "target_SOLO_level": data.get("target_SOLO_level"),
         "related_learning_activity_id": data.get("related_learning_activity_id"),
+        "SOLO_level_mastery_examples": data.get("SOLO_level_mastery_examples"),
         "media_context": data.get("media_context"),
     }
     
     kc_store[kc_id] = stored_kc
+
+    app.logger.info(f"KC stored successfully: {kc_id}")
+    app.logger.info(f"Stored KC object: {stored_kc}")
+
     print(f"KC stored: {kc_id}")
     app.logger.info(f"KC stored: {kc_id}")
-
-    response_kc = {
-        **stored_kc,
-        "SOLO_level_mastery_examples": data.get("SOLO_level_mastery_examples")
-    }
 
     return jsonify({
         "status": "success",
         "message": f"Knowledge component {kc_id} received",
-        "kc": response_kc
+        "kc": stored_kc
     }), 200
 
 
@@ -127,6 +130,7 @@ def get_kc():
         "kc_description": kc_data.get("kc_description"),
         "target_SOLO_level": kc_data.get("target_SOLO_level"),
         "related_learning_activity_id": kc_data.get("related_learning_activity_id"),
+        "SOLO_level_mastery_examples": kc_data.get("SOLO_level_mastery_examples"),
         "media_context": kc_data.get("media_context"),
     }), 200
 
