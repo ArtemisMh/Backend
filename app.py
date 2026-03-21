@@ -173,7 +173,7 @@ def get_student_history():
     if kc_id:
         results = [r for r in results if r.get("kc_id") == kc_id]
 
-    results_sorted = sorted(results, key=lambda r: r.get("timestamp", ""), reverse=True)
+    results_sorted = sorted(results, key=lambda r: r.get("timestamp") or "", reverse=True)
     if latest and results_sorted:
         results_sorted = [results_sorted[0]]
 
@@ -1201,9 +1201,10 @@ def generate_reaction():
         if r.get("student_id") == student_id and r.get("kc_id") == kc_id
     ]
     if not kc_history:
-        return jsonify({"error": f"No student historical data found for student_id={student_id} and kc_id={kc_id}"}), 404
+        return jsonify({
+            "error": f"No student historical data found for student_id={student_id} and kc_id={kc_id}"
+        }), 404
 
-    # Latest record for current KC
     latest_record = sorted(kc_history, key=lambda r: r.get("timestamp") or "", reverse=True)[0]
 
     learning_activity_id = latest_record.get("learning_activity_id") or related_learning_activity_id
@@ -1261,7 +1262,13 @@ def generate_reaction():
 
         try:
             keywords = _build_site_keywords(kc_title, kc_desc)
-            nearest = _google_nearest_place(lat, lng, keywords, GOOGLE_API_KEY, exclude_city=kc_city or None)
+            nearest = _google_nearest_place(
+                lat,
+                lng,
+                keywords,
+                GOOGLE_API_KEY,
+                exclude_city=kc_city or None
+            )
             if nearest:
                 site_lat = nearest.get("lat")
                 site_lon = nearest.get("lng")
@@ -1273,6 +1280,8 @@ def generate_reaction():
                     open_status = "open" if details["open_now"] else "closed"
                 if details.get("price_level") == 0:
                     fee_status = "free"
+
+                # Only keep reliable links
                 place_url = _strict_resource_link(details.get("website") or details.get("maps_url"))
 
                 if site_lat is not None and site_lon is not None:
@@ -1316,7 +1325,7 @@ def generate_reaction():
             lang=lang,
         )
 
-    # Remove empty link from output if absent
+    # Never return empty/guessed links
     if not contextual_task.get("link"):
         contextual_task["link"] = None
 
