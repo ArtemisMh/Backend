@@ -694,210 +694,651 @@ def store_history():
         }
     }), 200
 
-# ---------------------- React Layer Agent ----------------------------- #
+# ---------------------- React Agent Helpers -------------------------- #
 
+SOLO_ORDER = {
+    "Pre-structural": 0,
+    "Uni-structural": 1,
+    "Multi-structural": 2,
+    "Relational": 3,
+    "Extended abstract": 4,
+}
+
+
+def _summarize_student_response(record: dict, max_len: int = 220) -> str:
+    text = (
+        record.get("student_response")
+        or record.get("student_response_transcription")
+        or ""
+    ).strip()
+
+    if not text:
+        response_type = record.get("student_response_type") or "unknown"
+        ref = record.get("student_response_reference")
+        if ref:
+            text = f"{response_type} submission referenced by {ref}"
+        else:
+            text = f"{response_type} submission with no readable transcription"
+
+    text = " ".join(text.split())
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3].rstrip() + "..."
+
+
+def _infer_language_from_record(record: dict) -> str:
+    text = (
+        (record.get("student_response") or "")
+        + " "
+        + (record.get("student_response_transcription") or "")
+        + " "
+        + (record.get("justification") or "")
+    ).lower()
+
+    spanish_markers = [
+        " el ", " la ", " los ", " las ", " un ", " una ", " que ", " porque ",
+        " no ", " sí ", " dibujo ", " apuntes ", " nota ", " leer ", " texto ",
+        " relaciona ", " explica ", " respuesta ", " estudiante "
+    ]
+    score = sum(1 for m in spanish_markers if m in f" {text} ")
+    return "es" if score >= 2 else "en"
+
+
+def _media_context_category(media_context: str | None) -> str:
+    mc = (media_context or "").lower()
+
+    drawing_kw = ["drawing", "draw", "sketch", "dibujo", "dibujar", "boceto"]
+    notes_kw = ["notes", "note-taking", "taking notes", "apuntes", "tomar notas", "nota"]
+    reading_kw = ["reading", "read", "lectura", "leer", "texto"]
+    annotation_kw = ["annotation", "annotate", "annotating", "anotación", "anotaciones"]
+    physical_kw = [
+        "local environment", "environment", "fieldwork", "site visit", "museum",
+        "school", "library", "outdoor", "indoor", "visiting", "place", "nearby",
+        "entorno local", "trabajo de campo", "visita", "biblioteca", "escuela",
+        "colegio", "museo", "aire libre", "interior"
+    ]
+
+    if any(k in mc for k in drawing_kw):
+        return "Drawing"
+    if any(k in mc for k in annotation_kw):
+        return "Annotation"
+    if any(k in mc for k in notes_kw):
+        return "Notes"
+    if any(k in mc for k in reading_kw):
+        return "Reading"
+    if any(k in mc for k in physical_kw):
+        return "Physical"
+    return "Virtual"
+
+
+def _next_solo_label(current_level: str, target_level: str) -> str:
+    current_idx = SOLO_ORDER.get(current_level, 0)
+    target_idx = SOLO_ORDER.get(target_level, current_idx)
+    if current_idx >= target_idx:
+        return target_level or current_level or "Relational"
+
+    for label, idx in SOLO_ORDER.items():
+        if idx == current_idx + 1:
+            return label
+    return target_level or current_level or "Relational"
+
+
+def _reflective_prompt(current_level: str, target_level: str, kc_title: str, lang: str = "es") -> str:
+    next_level = _next_solo_label(current_level, target_level)
+    title = kc_title or ("el tema" if lang == "es" else "the topic")
+
+    if lang == "es":
+        prompts = {
+            "Uni-structural": f"Ahora mismo tu respuesta muestra comprensión muy limitada sobre {title}. ¿Qué idea central sí puedes identificar con claridad y cómo se relaciona con la tarea?",
+            "Multi-structural": f"Ya mencionas algunos elementos de {title}, pero todavía aparecen separados. ¿Cuáles son los dos o tres elementos más importantes y cómo se relacionan entre sí?",
+            "Relational": f"Ya reconoces varios aspectos de {title}. ¿Cómo puedes integrarlos en una explicación coherente que justifique relaciones, causas o funciones?",
+            "Extended abstract": f"Tu comprensión de {title} ya puede ir más allá del caso concreto. ¿Qué principio general, comparación o hipótesis puedes formular a partir de lo observado?"
+        }
+        return prompts.get(next_level, f"Revisa lo que falta en tu razonamiento sobre {title} y explica cómo conectar mejor las ideas principales.")
+    else:
+        prompts = {
+            "Uni-structural": f"Your response currently shows very limited understanding of {title}. What is one central idea you can identify clearly, and how does it relate to the task?",
+            "Multi-structural": f"You already mention some elements of {title}, but they still appear disconnected. Which two or three elements matter most, and how do they relate?",
+            "Relational": f"You identify several aspects of {title}. How can you integrate them into one coherent explanation that justifies relationships, causes, or functions?",
+            "Extended abstract": f"Your understanding of {title} can now go beyond the immediate case. What broader principle, comparison, or hypothesis can you propose?"
+        }
+        return prompts.get(next_level, f"Review what is missing in your reasoning about {title} and explain how the main ideas connect more clearly.")
+
+
+def _scaffolded_response(current_level: str, target_level: str, kc_title: str, kc_desc: str, lang: str = "es") -> str:
+    title = kc_title or ("el tema" if lang == "es" else "the topic")
+    desc = kc_desc or ""
+
+    if lang == "es":
+        if SOLO_ORDER.get(target_level, 0) >= SOLO_ORDER["Relational"]:
+            return (
+                f"Una respuesta más sólida sobre {title} debería integrar varias ideas en una explicación coherente. "
+                f"Por ejemplo: '{title} no se entiende solo por elementos aislados; sus partes se relacionan entre sí "
+                f"para construir un significado conjunto. {desc}'."
+            )
+        return (
+            f"Una respuesta mejorada sobre {title} debería mencionar más de un aspecto relevante y organizarlos con claridad. "
+            f"Por ejemplo: 'En {title} aparecen varios elementos importantes que pueden describirse de forma ordenada antes de relacionarlos'."
+        )
+    else:
+        if SOLO_ORDER.get(target_level, 0) >= SOLO_ORDER["Relational"]:
+            return (
+                f"A stronger response about {title} should integrate several ideas into one coherent explanation. "
+                f"For example: '{title} is not understood through isolated elements alone; its parts relate to one another "
+                f"to create a combined meaning. {desc}'."
+            )
+        return (
+            f"An improved response about {title} should mention more than one relevant aspect and organize them clearly. "
+            f"For example: 'In {title}, several important elements appear and can be described in an ordered way before connecting them'."
+        )
+
+
+def _educator_summary_for_activity(records: list[dict], current_record: dict, lang: str = "es") -> str:
+    sorted_records = sorted(records, key=lambda r: r.get("timestamp") or "")
+    current_level = current_record.get("SOLO_level") or "Pre-structural"
+
+    if len(sorted_records) <= 1:
+        if lang == "es":
+            return (
+                f"Esta es la primera evidencia registrada para esta actividad. La valoración debe basarse solo en la respuesta actual: "
+                f"el estudiante se sitúa en {current_level} y todavía presenta aspectos a reforzar según la justificación y las lagunas detectadas."
+            )
+        return (
+            f"This is the first recorded evidence for this activity. The evaluation must be based only on the current response: "
+            f"the student is currently at {current_level} and still shows areas that need reinforcement according to the justification and detected gaps."
+        )
+
+    levels = [r.get("SOLO_level") or "Pre-structural" for r in sorted_records]
+    idxs = [SOLO_ORDER.get(l, 0) for l in levels]
+
+    improving = idxs[-1] > idxs[0] and all(b >= a for a, b in zip(idxs, idxs[1:]))
+    declining = idxs[-1] < idxs[0] and all(b <= a for a, b in zip(idxs, idxs[1:]))
+    fluctuating = not improving and not declining and len(set(idxs)) > 1
+
+    if lang == "es":
+        if improving:
+            return (
+                f"En esta actividad se observa una progresión global desde {levels[0]} hasta {levels[-1]}. "
+                f"Hay avance, pero el nivel actual todavía requiere consolidar relaciones, precisión o profundidad conceptual según el caso."
+            )
+        if declining:
+            return (
+                f"En esta actividad se aprecia un descenso desde {levels[0]} hasta {levels[-1]}. "
+                f"Conviene revisar qué elementos antes presentes ya no aparecen con claridad y reforzar la coherencia del razonamiento."
+            )
+        if fluctuating:
+            return (
+                f"En esta actividad el desempeño ha sido fluctuante ({' → '.join(levels)}). "
+                f"Hay evidencia parcial de comprensión, pero la consistencia del razonamiento todavía no está consolidada."
+            )
+        return (
+            f"En esta actividad el estudiante mantiene un desempeño bastante estable en {levels[-1]}. "
+            f"Existe una base reconocible, aunque aún deben reforzarse aspectos de profundidad o integración."
+        )
+    else:
+        if improving:
+            return (
+                f"For this activity, there is an overall progression from {levels[0]} to {levels[-1]}. "
+                f"There is progress, but the current level still requires stronger relations, precision, or conceptual depth."
+            )
+        if declining:
+            return (
+                f"For this activity, there is a decline from {levels[0]} to {levels[-1]}. "
+                f"It would be useful to review which elements previously present are no longer clearly expressed and reinforce coherence."
+            )
+        if fluctuating:
+            return (
+                f"For this activity, performance has fluctuated ({' → '.join(levels)}). "
+                f"There is partial evidence of understanding, but the consistency of reasoning is not yet consolidated."
+            )
+        return (
+            f"For this activity, the student shows a fairly stable performance at {levels[-1]}. "
+            f"There is a recognizable base, although depth and integration still need reinforcement."
+        )
+
+
+def _strict_resource_link(url: str | None) -> str | None:
+    if not url:
+        return None
+    url = url.strip()
+    if not url:
+        return None
+    blocked = ["wikipedia.org", "w/index.php?search="]
+    if any(b in url.lower() for b in blocked):
+        return None
+    return url
+
+
+def _contextual_basis(media_context: str | None, category: str, lang: str = "es") -> dict:
+    mc = media_context or ""
+    if lang == "es":
+        rationale = (
+            f"Se propone esta reacción porque el media_context definido en Learning Design Agent es '{mc}'. "
+            f"Por ello, la tarea se orienta al formato pedagógico más coherente con esa propuesta ({category})."
+        )
+    else:
+        rationale = (
+            f"This reaction is proposed because the media_context defined in the Learning Design Agent is '{mc}'. "
+            f"Therefore, the task is aligned with the pedagogical format most consistent with that proposal ({category})."
+        )
+    return {"media_context": mc, "rationale": rationale}
+
+
+def _task_from_media_context(
+    category: str,
+    kc_title: str,
+    current_level: str,
+    target_level: str,
+    media_context: str | None,
+    lang: str = "es",
+    place_data: dict | None = None,
+    weather_data: dict | None = None,
+) -> dict:
+    title = kc_title or ("el tema" if lang == "es" else "the topic")
+    mc = media_context or ""
+    place_data = place_data or {}
+    weather_data = weather_data or {}
+
+    if category == "Drawing":
+        if lang == "es":
+            return {
+                "task_type": "Drawing",
+                "task_title": f"Dibujo guiado sobre {title}",
+                "task_description": (
+                    f"Realiza un dibujo o esquema sobre {title} y añade al menos dos etiquetas explicativas. "
+                    f"El dibujo debe mostrar las partes o ideas clave y no solo su apariencia."
+                ),
+                "link": None,
+                "feasibility_notes": (
+                    f"La tarea se propone directamente desde el media_context '{mc}', por lo que no requiere distancia, clima ni lugar físico."
+                )
+            }
+        return {
+            "task_type": "Drawing",
+            "task_title": f"Guided drawing about {title}",
+            "task_description": (
+                f"Create a drawing or sketch about {title} and add at least two explanatory labels. "
+                f"The drawing should show key parts or ideas, not only appearance."
+            ),
+            "link": None,
+            "feasibility_notes": (
+                f"This task is proposed directly from the media_context '{mc}', so it does not require distance, weather, or a physical place."
+            )
+        }
+
+    if category == "Notes":
+        if lang == "es":
+            return {
+                "task_type": "Notes",
+                "task_title": f"Apuntes estructurados sobre {title}",
+                "task_description": (
+                    f"Escribe una nota breve con 3 ideas clave sobre {title}. Después, añade una frase final explicando cómo se relacionan entre sí."
+                ),
+                "link": None,
+                "feasibility_notes": (
+                    f"La tarea aclara explícitamente el formato de respuesta (apuntes/nota) porque el media_context propuesto es '{mc}'."
+                )
+            }
+        return {
+            "task_type": "Notes",
+            "task_title": f"Structured notes about {title}",
+            "task_description": (
+                f"Write a short note with 3 key ideas about {title}. Then add one final sentence explaining how those ideas relate to one another."
+            ),
+            "link": None,
+            "feasibility_notes": (
+                f"The task explicitly clarifies the response format (notes) because the proposed media_context is '{mc}'."
+            )
+        }
+
+    if category == "Reading":
+        if lang == "es":
+            return {
+                "task_type": "Reading",
+                "task_title": f"Lectura y nota breve sobre {title}",
+                "task_description": (
+                    f"Lee el recurso o texto disponible sobre {title} y escribe una nota breve con dos ideas principales y una relación entre ellas."
+                ),
+                "link": None,
+                "feasibility_notes": (
+                    f"Se propone una tarea de lectura seguida de nota breve porque el media_context es '{mc}'."
+                )
+            }
+        return {
+            "task_type": "Reading",
+            "task_title": f"Reading and short note about {title}",
+            "task_description": (
+                f"Read the available resource or text about {title} and write a short note with two main ideas and one relationship between them."
+            ),
+            "link": None,
+            "feasibility_notes": (
+                f"A reading-followed-by-note task is proposed because the media_context is '{mc}'."
+            )
+        }
+
+    if category == "Annotation":
+        if lang == "es":
+            return {
+                "task_type": "Annotation",
+                "task_title": f"Anotación guiada sobre {title}",
+                "task_description": (
+                    f"Anota un texto, imagen o dibujo relacionado con {title}. Marca dos elementos relevantes y añade una breve explicación de por qué son importantes."
+                ),
+                "link": None,
+                "feasibility_notes": (
+                    f"La tarea explicita el formato de anotación porque el media_context propuesto es '{mc}'."
+                )
+            }
+        return {
+            "task_type": "Annotation",
+            "task_title": f"Guided annotation about {title}",
+            "task_description": (
+                f"Annotate a text, image, or drawing related to {title}. Mark two relevant elements and add a brief explanation of why they matter."
+            ),
+            "link": None,
+            "feasibility_notes": (
+                f"The task explicitly uses annotation because the proposed media_context is '{mc}'."
+            )
+        }
+
+    if category == "Physical":
+        distance_m = place_data.get("distance_m")
+        open_status = place_data.get("open_status", "unknown")
+        fee_status = place_data.get("fee_status", "unknown")
+        place_name = place_data.get("name") or ("el lugar cercano" if lang == "es" else "the nearby place")
+        address = place_data.get("address") or ""
+        condition = weather_data.get("condition")
+        temp_f = weather_data.get("temperature_f")
+
+        bad_weather_or_hot = (condition in {"rainy", "stormy"}) or (temp_f is not None and temp_f > 96)
+        good_weather_and_not_hot = (condition in {"sunny", "clear", "cloudy"}) and (temp_f is not None and temp_f <= 96)
+        site_is_open = (open_status == "open")
+        site_is_free = (fee_status == "free")
+
+        if distance_m is not None and distance_m <= 1000:
+            if bad_weather_or_hot and site_is_open and site_is_free:
+                if lang == "es":
+                    return {
+                        "task_type": "Indoor",
+                        "task_title": f"Actividad interior en {place_name}",
+                        "task_description": (
+                            f"Entra en {place_name} {f'({address})' if address else ''} y registra dos elementos relacionados con {title}. "
+                            f"Después, escribe una explicación breve conectando ambos elementos."
+                        ),
+                        "link": _strict_resource_link(place_data.get("url")),
+                        "feasibility_notes": (
+                            f"Se propone una actividad interior porque el media_context es '{mc}', la distancia es {distance_m} m, "
+                            f"el clima es '{condition}' y el lugar aparece abierto y gratuito."
+                        )
+                    }
+                return {
+                    "task_type": "Indoor",
+                    "task_title": f"Indoor activity at {place_name}",
+                    "task_description": (
+                        f"Go inside {place_name} {f'({address})' if address else ''} and identify two elements related to {title}. "
+                        f"Then write a short explanation connecting both elements."
+                    ),
+                    "link": _strict_resource_link(place_data.get("url")),
+                    "feasibility_notes": (
+                        f"An indoor activity is proposed because the media_context is '{mc}', the distance is {distance_m} m, "
+                        f"the weather is '{condition}', and the place appears open and free."
+                    )
+                }
+
+            if good_weather_and_not_hot:
+                if lang == "es":
+                    return {
+                        "task_type": "Outdoor",
+                        "task_title": f"Observación exterior sobre {title}",
+                        "task_description": (
+                            f"Observa el exterior de {place_name} {f'({address})' if address else ''} y toma dos notas sobre rasgos relacionados con {title}. "
+                            f"Después, explica qué relación tienen con el contenido trabajado."
+                        ),
+                        "link": _strict_resource_link(place_data.get("url")),
+                        "feasibility_notes": (
+                            f"Se propone una actividad exterior porque el media_context es '{mc}', la distancia es {distance_m} m "
+                            f"y las condiciones permiten trabajo fuera aunque el acceso interior no sea necesariamente viable."
+                        )
+                    }
+                return {
+                    "task_type": "Outdoor",
+                    "task_title": f"Outdoor observation about {title}",
+                    "task_description": (
+                        f"Observe the outside of {place_name} {f'({address})' if address else ''} and take two notes about features related to {title}. "
+                        f"Then explain how they connect to the content being studied."
+                    ),
+                    "link": _strict_resource_link(place_data.get("url")),
+                    "feasibility_notes": (
+                        f"An outdoor activity is proposed because the media_context is '{mc}', the distance is {distance_m} m, "
+                        f"and conditions allow outdoor work even if indoor access is not necessarily viable."
+                    )
+                }
+
+        if lang == "es":
+            return {
+                "task_type": "Virtual",
+                "task_title": f"Tarea virtual sobre {title}",
+                "task_description": (
+                    f"Revisa un recurso fiable sobre {title} y redacta una respuesta que avance desde {current_level} hacia {target_level}, "
+                    f"conectando ideas en lugar de solo listarlas."
+                ),
+                "link": _strict_resource_link(place_data.get("url")),
+                "feasibility_notes": (
+                    f"Se propone una tarea virtual porque el media_context es '{mc}', pero la distancia o las condiciones contextuales no hacen viable una actividad presencial."
+                )
+            }
+        return {
+            "task_type": "Virtual",
+            "task_title": f"Virtual task about {title}",
+            "task_description": (
+                f"Review a reliable resource about {title} and write a response that moves from {current_level} toward {target_level}, "
+                f"connecting ideas rather than only listing them."
+            ),
+            "link": _strict_resource_link(place_data.get("url")),
+            "feasibility_notes": (
+                f"A virtual task is proposed because the media_context is '{mc}', but distance or contextual conditions do not make an in-person activity viable."
+            )
+        }
+
+    # Default virtual
+    if lang == "es":
+        return {
+            "task_type": "Virtual",
+            "task_title": f"Profundización sobre {title}",
+            "task_description": (
+                f"Elabora una respuesta breve sobre {title} que mejore la integración de ideas y avance desde {current_level} hacia {target_level}."
+            ),
+            "link": None,
+            "feasibility_notes": (
+                f"La tarea se plantea como virtual porque el media_context '{mc}' no requiere interacción física ni se dispone de un recurso contextual fiable."
+            )
+        }
+    return {
+        "task_type": "Virtual",
+        "task_title": f"Deepening task about {title}",
+        "task_description": (
+            f"Write a short response about {title} that improves integration of ideas and moves from {current_level} toward {target_level}."
+        ),
+        "link": None,
+        "feasibility_notes": (
+            f"The task is proposed as virtual because the media_context '{mc}' does not require physical interaction and no reliable contextual resource is available."
+        )
+    }
+# ---------------------- React Layer Agent ----------------------------- #
 @app.route("/generate-reaction", methods=["POST"])
 def generate_reaction():
     """
-    Returns:
-      kc_id, student_id,
-      location: { formatted, coordinates, lat, lng, timestamp, timezone },
-      nearest_place: { name, address, url, distance_m|null, open_status, fee_status },
-      weather: null OR { condition, temperature_f },
-      task: { task_type, task_title, task_description, link|null, feasibility_notes }
+    Media_context-first reaction generator.
+
+    Behavior:
+      - Retrieves latest student history for the given KC.
+      - Uses LDA media_context as the primary driver.
+      - Applies the 1 km rule only for physical/location-based media_context.
+      - Returns pedagogical reaction fields plus contextual task details.
+      - Avoids guessed or empty links.
     """
     data = request.get_json() or {}
     kc_id = data.get("kc_id")
     student_id = data.get("student_id")
+
     if not kc_id or not student_id:
         return jsonify({"error": "kc_id and student_id are required"}), 400
 
-    # 1) Latest stored coordinates from history (authoritative)
-    lat1 = lon1 = None
-    last_rec = None
-    for rec in reversed(student_history):
-        if rec.get("student_id") == student_id and rec.get("kc_id") == kc_id:
-            lat1 = rec.get("lat")
-            lon1 = rec.get("lng")
-            last_rec = rec
-            break
-    if lat1 is None or lon1 is None or last_rec is None:
-        return jsonify({"error": "Student coordinates not found in the history for the given kc_id and student_id."}), 400
+    kc_meta = kc_store.get(kc_id)
+    if not kc_meta:
+        return jsonify({"error": f"KC with ID {kc_id} not found"}), 404
 
-    location_block = {
-        "formatted": last_rec.get("location"),
-        "coordinates": f"{lat1},{lon1}",
-        "lat": lat1,
-        "lng": lon1,
-        "timestamp": last_rec.get("timestamp"),
-        "timezone": last_rec.get("timezone"),
-    }
-
-    # 2) Current SOLO, KC metadata
-    current_SOLO = last_rec.get("SOLO_level") or ""
-    kc_meta = kc_store.get(kc_id, {})
+    # KC metadata
     kc_title = (kc_meta.get("title") or "").strip()
-    kc_desc  = (kc_meta.get("description") or "").strip()
-    target_SOLO = (kc_meta.get("target_SOLO_level") or "").strip()
-    kc_city = (kc_meta.get("kc_city") or "").strip()  # optional, if provided in KC
+    kc_desc = (kc_meta.get("kc_description") or "").strip()
+    target_SOLO = (kc_meta.get("target_SOLO_level") or "").strip() or "Relational"
+    media_context = kc_meta.get("media_context") or ""
+    related_learning_activity_id = kc_meta.get("related_learning_activity_id")
 
-    # 3) Nearest relevant site (rank-by-distance) with optional city exclusion
-    site_lat = site_lon = None
-    resource_name = "Unavailable"
-    site_address = "Unavailable"
-    site_url = None
-    open_status = "unknown"   # "open"|"closed"|"unknown"
-    fee_status  = "unknown"   # "free"|"unknown"
+    # Student history scoped to this KC
+    kc_history = [
+        r for r in student_history
+        if r.get("student_id") == student_id and r.get("kc_id") == kc_id
+    ]
+    if not kc_history:
+        return jsonify({"error": f"No student historical data found for student_id={student_id} and kc_id={kc_id}"}), 404
 
-    try:
-        keywords = _build_site_keywords(kc_title, kc_desc)
-        nearest = _google_nearest_place(lat1, lon1, keywords, GOOGLE_API_KEY, exclude_city=kc_city or None)
-        if nearest:
-            site_lat = nearest["lat"]
-            site_lon = nearest["lng"]
-            resource_name = nearest["name"]
-            site_address = nearest["address"]
+    # Latest record for current KC
+    latest_record = sorted(kc_history, key=lambda r: r.get("timestamp") or "", reverse=True)[0]
 
-            details = _google_place_details(nearest["place_id"], GOOGLE_API_KEY)
-            if isinstance(details.get("open_now"), bool):
-                open_status = "open" if details["open_now"] else "closed"
-            if "price_level" in details and details["price_level"] == 0:
-                fee_status = "free"
-            site_url = details.get("website") or details.get("maps_url")
-    except Exception as e:
-        app.logger.warning(f"Places search/details error: {e}")
-        site_lat = site_lon = None  # distance unknown
+    learning_activity_id = latest_record.get("learning_activity_id") or related_learning_activity_id
+    learning_activity_title = latest_record.get("learning_activity_title")
+    if not learning_activity_title and learning_activity_id:
+        activity_data = activity_store.get(learning_activity_id, {})
+        learning_activity_title = activity_data.get("learning_activity_title")
 
-    # 4) Distance FIRST
-    if site_lat is not None and site_lon is not None:
-        distance_m = haversine(lat1, lon1, site_lat, site_lon)
-    else:
+    current_SOLO = latest_record.get("SOLO_level") or "Pre-structural"
+    lang = _infer_language_from_record(latest_record)
+    student_response_type = latest_record.get("student_response_type") or "text"
+    student_response_summary = _summarize_student_response(latest_record)
+
+    # History for same learning activity only (for trajectory claims)
+    same_activity_history = [
+        r for r in student_history
+        if r.get("student_id") == student_id
+        and r.get("learning_activity_id") == learning_activity_id
+    ]
+
+    reflective_prompt = _reflective_prompt(current_SOLO, target_SOLO, kc_title, lang)
+    scaffolded_response = _scaffolded_response(current_SOLO, target_SOLO, kc_title, kc_desc, lang)
+    educator_summary = _educator_summary_for_activity(same_activity_history, latest_record, lang)
+
+    category = _media_context_category(media_context)
+    contextual_basis = _contextual_basis(media_context, category, lang)
+
+    timestamp = latest_record.get("timestamp")
+    timezone = latest_record.get("timezone")
+    location = latest_record.get("location")
+    lat = latest_record.get("lat")
+    lng = latest_record.get("lng")
+
+    nearest_place = None
+    weather = None
+
+    # Only run contextual APIs for physical media_context
+    if category == "Physical":
+        if lat is None or lng is None:
+            return jsonify({
+                "error": (
+                    "The media_context requires physical/contextual activity, "
+                    "but no student coordinates are available in history."
+                )
+            }), 400
+
+        kc_city = (kc_meta.get("kc_city") or "").strip()
+        place_url = None
+        open_status = "unknown"
+        fee_status = "unknown"
+        resource_name = "Unavailable"
+        site_address = "Unavailable"
+        site_lat = site_lon = None
         distance_m = None
 
-    is_within_1km = (distance_m is not None) and (distance_m <= 1000)
-    app.logger.info(f"/generate-reaction student={student_id} kc={kc_id} "
-                    f"latest=({lat1},{lon1}) site=({site_lat},{site_lon}) distance={distance_m}")
+        try:
+            keywords = _build_site_keywords(kc_title, kc_desc)
+            nearest = _google_nearest_place(lat, lng, keywords, GOOGLE_API_KEY, exclude_city=kc_city or None)
+            if nearest:
+                site_lat = nearest.get("lat")
+                site_lon = nearest.get("lng")
+                resource_name = nearest.get("name", "Unknown")
+                site_address = nearest.get("address", "Unknown")
 
-    # Helper: best heritage link for virtual tasks
-    details_for_link = {"website": site_url} if site_url else {}
-    best_link = _best_heritage_link(resource_name, details_for_link, kc_title, last_rec.get("location") or "")
+                details = _google_place_details(nearest.get("place_id"), GOOGLE_API_KEY)
+                if isinstance(details.get("open_now"), bool):
+                    open_status = "open" if details["open_now"] else "closed"
+                if details.get("price_level") == 0:
+                    fee_status = "free"
+                place_url = _strict_resource_link(details.get("website") or details.get("maps_url"))
 
-    # 5) If distance unknown OR > 1 km → Virtual (skip weather/access)
-    if (distance_m is None) or (not is_within_1km):
-        question = _solo_transition_prompt(current_SOLO, target_SOLO, kc_title or kc_desc, "es")
-        task = {
-            "task_type": "Virtual",
-            "task_title": f"Exploración virtual: {kc_title or 'material'}",
-            "task_description": (
-                f"Revisa el recurso en línea y responde: {question} "
-                "Incluye 1 evidencia (captura o cita del material) en tu respuesta."
-            ),
-            "link": best_link,
-            "feasibility_notes": (
-                f"Distance is {'unknown' if distance_m is None else int(distance_m)} m. "
-                "Regla: al superar 1000 m (o sin recurso cercano), se omiten clima/acceso y se asigna tarea virtual."
-            )
+                if site_lat is not None and site_lon is not None:
+                    distance_m = int(haversine(lat, lng, site_lat, site_lon))
+        except Exception as e:
+            app.logger.warning(f"React places/context error: {e}")
+
+        if distance_m is not None and distance_m <= 1000:
+            condition, temp_f = get_weather(lat, lng)
+            weather = {
+                "condition": condition,
+                "temperature_f": temp_f
+            }
+
+        nearest_place = {
+            "name": resource_name,
+            "address": site_address,
+            "url": place_url,
+            "distance_m": distance_m,
+            "open_status": open_status,
+            "fee_status": fee_status
         }
 
-        return jsonify({
-            "kc_id": kc_id,
-            "student_id": student_id,
-            "location": location_block,
-            "nearest_place": {
-                "name": resource_name,
-                "address": site_address,
-                "url": site_url,
-                "distance_m": (None if distance_m is None else int(distance_m)),
-                "open_status": "unknown",
-                "fee_status": "unknown"
-            },
-            "weather": None,
-            "task": task
-        }), 200
-
-    # 6) Within 1 km → check weather & temperature, then decide task
-    condition, temp_f = get_weather(lat1, lon1)
-    bad_weather_or_hot       = (condition in {"rainy", "stormy"}) or (temp_f is not None and temp_f > 96)
-    good_weather_and_not_hot = (condition in {"sunny", "clear", "cloudy"}) and (temp_f is not None and temp_f <= 96)
-    site_is_open             = (open_status == "open")
-    site_is_free             = (fee_status  == "free")
-
-    if bad_weather_or_hot and site_is_open and site_is_free:
-        task = {
-            "task_type": "Indoor",
-            "task_title": f"Exploración interior en {resource_name}",
-            "task_description": (
-                f"Entra a {resource_name} ({site_address}). Busca un elemento que conecte con «{kc_title or kc_desc}» "
-                "y explica en 3 oraciones qué ves, qué significa y cómo se relaciona con el tema."
-            ),
-            "feasibility_notes": (
-                f"Within 1 km ({int(distance_m)} m). Clima='{condition}', "
-                f"temp={'unknown' if temp_f is None else f'{temp_f}°F'}. Recurso accesible y gratuito."
-            )
-        }
-
-    elif good_weather_and_not_hot and (not site_is_open or not site_is_free):
-        task = {
-            "task_type": "Outdoor",
-            "task_title": f"Observación exterior de {resource_name}",
-            "task_description": (
-                f"Desde el exterior de {resource_name}, identifica dos rasgos visibles relacionados con «{kc_title or kc_desc}». "
-                "Describe su función y semejanza/diferencia en 3–4 oraciones."
-            ),
-            "feasibility_notes": (
-                f"Within 1 km ({int(distance_m)} m). Clima='{condition}', "
-                f"temp={'unknown' if temp_f is None else f'{temp_f}°F'} (≤96°F). Interior no accesible (cerrado o con costo)."
-            )
-        }
-
-    elif good_weather_and_not_hot and site_is_open and site_is_free:
-        task = {
-            "task_type": "Outdoor",
-            "task_title": f"Recorrido guiado al aire libre en {resource_name}",
-            "task_description": (
-                f"Rodea {resource_name}. Toma dos notas o ejemplos de detalles que expliquen «{kc_title or kc_desc}». "
-                "Compara su función y relación con el tema en 4 oraciones."
-            ),
-            "feasibility_notes": (
-                f"Within 1 km ({int(distance_m)} m). Clima='{condition}', "
-                f"temp={'unknown' if temp_f is None else f'{temp_f}°F'} (≤96°F). Recurso accesible y gratuito."
-            )
-        }
-
+        contextual_task = _task_from_media_context(
+            category=category,
+            kc_title=kc_title,
+            current_level=current_SOLO,
+            target_level=target_SOLO,
+            media_context=media_context,
+            lang=lang,
+            place_data=nearest_place,
+            weather_data=weather,
+        )
     else:
-        # Safe fallback: virtual with site-specific link
-        question = _solo_transition_prompt(current_SOLO, target_SOLO, kc_title or kc_desc, "es")
-        task = {
-            "task_type": "Virtual",
-            "task_title": f"Exploración virtual (resguardo): {kc_title or 'material'}",
-            "task_description": (
-                f"Revisa el recurso en línea y responde: {question} "
-                "Incluye 1 evidencia (captura o cita del material)."
-            ),
-            "link": _best_heritage_link(resource_name, {"website": site_url} if site_url else {}, kc_title, last_rec.get("location") or ""),
-            "feasibility_notes": (
-                f"Within 1 km ({int(distance_m)} m), pero condiciones insuficientes "
-                f"(clima='{condition}', temp={temp_f}, open='{open_status}', fee='{fee_status}')."
-            )
-        }
+        contextual_task = _task_from_media_context(
+            category=category,
+            kc_title=kc_title,
+            current_level=current_SOLO,
+            target_level=target_SOLO,
+            media_context=media_context,
+            lang=lang,
+        )
+
+    # Remove empty link from output if absent
+    if not contextual_task.get("link"):
+        contextual_task["link"] = None
 
     return jsonify({
         "kc_id": kc_id,
         "student_id": student_id,
-        "location": location_block,
-        "nearest_place": {
-            "name": resource_name,
-            "address": site_address,
-            "url": site_url,
-            "distance_m": int(distance_m),
-            "open_status": open_status,
-            "fee_status": fee_status
-        },
-        "weather": {
-            "condition": condition,
-            "temperature_f": temp_f
-        },
-        "task": task
+        "learning_activity_id": learning_activity_id,
+        "learning_activity_title": learning_activity_title,
+        "student_response_type": student_response_type,
+        "student_response_summary": student_response_summary,
+        "timestamp": timestamp,
+        "timezone": timezone,
+        "location": location,
+        "current_SOLO_level": current_SOLO,
+        "target_SOLO_level": target_SOLO,
+        "reflective_prompt": reflective_prompt,
+        "scaffolded_response": scaffolded_response,
+        "educator_summary": educator_summary,
+        "contextual_basis": contextual_basis,
+        "nearest_place": nearest_place,
+        "weather": weather,
+        "contextual_task": contextual_task
     }), 200
 
 # if __name__ == "__main__":
