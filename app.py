@@ -55,13 +55,30 @@ def submit_kc():
             "status": "error",
             "message": "kc_id is required."
         }), 400
-    
+
+    aligned_learning_objectives = data.get("aligned_learning_objectives")
+    aligned_competencies = data.get("aligned_competencies")
+
+    if aligned_learning_objectives is None or not isinstance(aligned_learning_objectives, list):
+        return jsonify({
+            "status": "error",
+            "message": "aligned_learning_objectives must be a list."
+        }), 400
+
+    if aligned_competencies is None or not isinstance(aligned_competencies, list):
+        return jsonify({
+            "status": "error",
+            "message": "aligned_competencies must be a list."
+        }), 400
+
     stored_kc = {
         "kc_id": kc_id,
         "title": data.get("title"),
         "kc_description": data.get("kc_description"),
         "target_SOLO_level": data.get("target_SOLO_level"),
         "related_learning_activity_id": data.get("related_learning_activity_id"),
+        "aligned_learning_objectives": aligned_learning_objectives,
+        "aligned_competencies": aligned_competencies,
         "SOLO_level_mastery_examples": data.get("SOLO_level_mastery_examples"),
         "media_context": data.get("media_context"),
     }
@@ -75,7 +92,6 @@ def submit_kc():
         "message": f"Knowledge component {kc_id} received",
         "kc": stored_kc
     }), 200
-
 
 @app.route("/list_kcs", methods=["GET"])
 def list_kcs():
@@ -138,6 +154,8 @@ def get_kc():
         "kc_description": kc_data.get("kc_description"),
         "target_SOLO_level": kc_data.get("target_SOLO_level"),
         "related_learning_activity_id": kc_data.get("related_learning_activity_id"),
+        "aligned_learning_objectives": kc_data.get("aligned_learning_objectives", []),
+        "aligned_competencies": kc_data.get("aligned_competencies", []),
         "SOLO_level_mastery_examples": kc_data.get("SOLO_level_mastery_examples"),
         "media_context": kc_data.get("media_context"),
     }), 200
@@ -1194,6 +1212,8 @@ def generate_reaction():
     target_SOLO = (kc_meta.get("target_SOLO_level") or "").strip() or "Relational"
     media_context = kc_meta.get("media_context") or ""
     related_learning_activity_id = kc_meta.get("related_learning_activity_id")
+    aligned_learning_objectives = kc_meta.get("aligned_learning_objectives", [])
+    aligned_competencies = kc_meta.get("aligned_competencies", [])
 
     # Student history scoped to this KC
     kc_history = [
