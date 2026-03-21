@@ -187,6 +187,8 @@ def get_student_history():
             "lng": record.get("lng"),
             "kc_id": record.get("kc_id"),
             "student_id": record.get("student_id"),
+            "learning_activity_id": record.get("learning_activity_id"),
+            "learning_activity_title": record.get("learning_activity_title"),
             "SOLO_level": record.get("SOLO_level"),
             "student_response": record.get("student_response"),
             "student_response_type": record.get("student_response_type"),
@@ -194,7 +196,8 @@ def get_student_history():
             "student_response_transcription": record.get("student_response_transcription"),
             "justification": record.get("justification"),
             "misconceptions": record.get("misconceptions"),
-            "target_SOLO_level": record.get("target_SOLO_level")
+            "target_SOLO_level": record.get("target_SOLO_level"),
+            "location_required": record.get("location_required"),
         })
 
     return jsonify({"records": response}), 200
@@ -205,7 +208,9 @@ def analyze_response():
     data = request.get_json() or {}
 
     kc_id = data.get("kc_id")
-    student_id = data.get("student_id")
+    student_id = data.get("student_id") 
+    learning_activity_id = data.get("learning_activity_id")
+    learning_activity_title = data.get("learning_activity_title")
 
     student_response = (data.get("student_response") or "").strip()
     student_response_type = (data.get("student_response_type") or "text").strip().lower()
@@ -215,19 +220,23 @@ def analyze_response():
     if not kc_id or not student_id:
         return jsonify({"error": "kc_id and student_id are required"}), 400
 
-    if student_response_type not in {"text", "image", "pdf"}:
-        return jsonify({"error": "student_response_type must be one of: text, image, pdf"}), 400
+    if student_response_type not in {"text", "image", "pdf", "drawing", "notes"}:
+        return jsonify({
+            "error": "student_response_type must be one of: text, image, pdf, drawing, notes"
+        }), 400
 
     # Use text if available; otherwise fall back to transcription
     response_text = (student_response or student_response_transcription).lower().strip()
 
-    # Basic placeholder logic only.
     # The LLM should do the real classification using /get_kc and /get_activity.
+    # Placeholder logic only
     if not response_text:
         solo_level = "Pre-structural"
         justification = "No readable or transcribed student response was provided."
         misconceptions = "Response is blank, unreadable, or insufficient to assess."
-    elif any(phrase in response_text for phrase in ["i don't know", "i dont know", "no sé", "no se", "i don't remember", "no recuerdo"]):
+    elif any(phrase in response_text for phrase in [
+        "i don't know", "i dont know", "no sé", "no se", "i don't remember", "no recuerdo"
+    ]):
         solo_level = "Pre-structural"
         justification = "The response explicitly indicates lack of knowledge or recall."
         misconceptions = "No evidence of relevant understanding is shown."
@@ -251,6 +260,8 @@ def analyze_response():
     return jsonify({
         "kc_id": kc_id,
         "student_id": student_id,
+        "learning_activity_id": learning_activity_id,
+        "learning_activity_title": learning_activity_title,
         "student_response_type": student_response_type,
         "student_response_reference": student_response_reference,
         "student_response_transcription": student_response_transcription if student_response_transcription else None,
@@ -266,9 +277,10 @@ def haversine(lat1, lon1, lat2, lon2):
     R = 6371000  # Earth radius in meters
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
+    dlambda = math.radians(lon1 - lon2)
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
+
 
 def get_weather(lat, lng):
     """Return (condition, temp_f) or ('unknown', None) if unavailable."""
@@ -280,7 +292,7 @@ def get_weather(lat, lng):
             "lat": lat,
             "lon": lng,
             "appid": OPENWEATHER_API_KEY,
-            "units": "imperial"  # Fahrenheit
+            "units": "imperial"
         }, timeout=12)
         response.raise_for_status()
         data = response.json()
@@ -337,7 +349,7 @@ def _ensure_coordinates_and_location(payload: dict):
     if isinstance(loc, str) and "," in loc:
         plat, plng = _parse_latlng_from_string(loc)
         if plat is not None and plng is not None:
-            return plat, plng, loc, None  # keep provided string as label
+            return plat, plng, loc, None
 
     # 3) Geocode free-text
     if isinstance(loc, str) and loc.strip():
@@ -365,22 +377,52 @@ def _ensure_coordinates_and_location(payload: dict):
         except Exception:
             return None, None, loc, None
 
-    # Unknown coords
     return None, None, (loc if isinstance(loc, str) else None), None
 
-def _now_in_timezone(tz_name: str):
+
+def _now_in_timezone(tz_name: str | None):
     """
     Returns (timestamp_iso, tz_name_final). Falls back to UTC if tz_name is missing/invalid.
-    Uses Python's zoneinfo (no pytz dependency).
     """
     try:
         tz = ZoneInfo(tz_name) if tz_name else ZoneInfo("UTC")
     except Exception:
         tz = ZoneInfo("UTC")
     dt = datetime.now(tz)
-    # ISO 8601 with offset, e.g., 2025-09-01T10:22:13+0200
     return dt.strftime("%Y-%m-%dT%H:%M:%S%z"), str(tz)
 
+
+def _location_required_from_media_context(media_context: str | None) -> bool:
+    """
+    Returns False for media contexts that are clearly non-location-dependent,
+    such as drawing or note-taking.
+    """
+    if not media_context:
+        return True
+
+    mc = media_context.lower()
+
+    non_location_keywords = [
+        "drawing",
+        "draw",
+        "sketch",
+        "taking note",
+        "taking notes",
+        "note-taking",
+        "notes",
+        "annotation",
+        "annotating",
+        "worksheet",
+        "apuntes",
+        "tomar notas",
+        "anotación",
+        "anotaciones",
+        "dibujo",
+        "dibujar",
+        "boceto",
+    ]
+
+    return not any(keyword in mc for keyword in non_location_keywords)
 
 # ---------------------- Places/Task Helpers ------------------------- #
 
@@ -397,7 +439,7 @@ def _nearby_rankby_distance(lat: float, lng: float, keyword: str, api_key: str):
     url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
     params = {
         "location": f"{lat},{lng}",
-        "rankby": "distance",   # nearest-first, no radius cap
+        "rankby": "distance",
         "keyword": keyword,
         "key": api_key
     }
@@ -421,14 +463,15 @@ def _google_nearest_place(lat: float, lng: float, keywords: str, api_key: str, e
 
     if not results:
         try:
-            results = _nearby_rankby_distance(lat, lng, "library OR school OR learning center OR educational resource", api_key)
+            results = _nearby_rankby_distance(
+                lat, lng, "library OR school OR learning center OR educational resource", api_key
+            )
         except Exception:
             results = []
 
     if not results:
         return None
 
-    # Prefer a result not in exclude_city (soft filter)
     picked = None
     if exclude_city:
         city_lower = exclude_city.lower()
@@ -509,15 +552,20 @@ def _solo_transition_prompt(current_level: str, target_level: str, kc_title: str
             return f"Synthesize a big-picture explanation about {title}. What new idea can you propose?"
         return f"Use the resource to progress toward {target_level}: write 3–4 sentences about {title}."
 
+
 # ---------------------- Store History (POST) -------------------------- #
 @app.route("/store-history", methods=["POST"])
 def store_history():
     """
-    Stores a SOLO assessment result and normalizes location:
-      - Accepts numeric lat/lng, or a "lat,lng" string in 'location', or a free-text 'location'.
-      - If free-text, geocodes via OpenCage to get lat/lng and a formatted label.
-      - Derives timezone from geocoding annotations when available; computes local timestamp.
-      - Supports multimodal student submissions: text, image, or pdf.
+    Stores a SOLO assessment result and optionally normalizes location.
+
+    Behavior:
+      - Supports multimodal student submissions: text, image, pdf, drawing, notes.
+      - Saves learning_activity_id and learning_activity_title in history.
+      - Accepts numeric lat/lng, a "lat,lng" string in 'location', or a free-text city/place.
+      - If the linked KC media_context suggests drawing/note-taking style work,
+        location is not required.
+      - If location is not required, timestamp/timezone/location may remain None.
     """
     data = request.get_json() or {}
     app.logger.info(f"/store-history payload: {data}")
@@ -531,20 +579,29 @@ def store_history():
 
     student_id = data.get("student_id")
     kc_id = data.get("kc_id")
+    learning_activity_id = data.get("learning_activity_id")
+    learning_activity_title = data.get("learning_activity_title")
     SOLO_level = data.get("SOLO_level")
 
     if not student_id or not kc_id or not SOLO_level:
         return jsonify({"error": "student_id, kc_id, and SOLO_level are required"}), 400
+
+    if not learning_activity_id:
+        return jsonify({"error": "learning_activity_id is required"}), 400
+
+    if not learning_activity_title:
+        return jsonify({"error": "learning_activity_title is required"}), 400
 
     student_response = data.get("student_response")
     student_response_type = (data.get("student_response_type") or "text").strip().lower()
     student_response_reference = data.get("student_response_reference")
     student_response_transcription = data.get("student_response_transcription")
 
-    if student_response_type not in {"text", "image", "pdf"}:
-        return jsonify({"error": "student_response_type must be one of: text, image, pdf"}), 400
+    if student_response_type not in {"text", "image", "pdf", "drawing", "notes"}:
+        return jsonify({
+            "error": "student_response_type must be one of: text, image, pdf, drawing, notes"
+        }), 400
 
-    # Optional fields the Analyze Layer Agent may include
     justification = data.get("justification")
     misconceptions = data.get("misconceptions")
     target_SOLO_level = data.get("target_SOLO_level")
@@ -556,12 +613,7 @@ def store_history():
     if misconceptions is None:
         return jsonify({"error": "misconceptions is required"}), 400
 
-    # Require at least one response representation
-    if not any([
-        student_response,
-        student_response_reference,
-        student_response_transcription
-    ]):
+    if not any([student_response, student_response_reference, student_response_transcription]):
         return jsonify({
             "error": (
                 "At least one of student_response, student_response_reference, "
@@ -569,25 +621,41 @@ def store_history():
             )
         }), 400
 
-    lat, lng, formatted_loc, tz_name_from_geo = _ensure_coordinates_and_location(data)
-    app.logger.info(f"Normalized -> lat={lat}, lng={lng}, formatted='{formatted_loc}', tz='{tz_name_from_geo}'")
+    kc_meta = kc_store.get(kc_id, {})
+    media_context = kc_meta.get("media_context")
+    location_required = _location_required_from_media_context(media_context)
 
-    if lat is None or lng is None:
-        return jsonify({
-            "error": (
-                "Could not resolve coordinates from the provided location. "
-                "Send numeric 'lat' and 'lng', or 'location' as 'lat,lng', "
-                "or a geocodable place/address string."
-            )
-        }), 400
+    lat = None
+    lng = None
+    formatted_loc = data.get("location")
+    tz_name_from_geo = None
+    timestamp_iso = None
+    tz_final = None
 
-    timestamp_iso, tz_final = _now_in_timezone(tz_name_from_geo)
+    if location_required:
+        lat, lng, formatted_loc, tz_name_from_geo = _ensure_coordinates_and_location(data)
+        app.logger.info(
+            f"Normalized -> lat={lat}, lng={lng}, formatted='{formatted_loc}', tz='{tz_name_from_geo}'"
+        )
+
+        if lat is None or lng is None:
+            return jsonify({
+                "error": (
+                    "Location is required for this activity context and could not be resolved. "
+                    "Send numeric 'lat' and 'lng', or 'location' as 'lat,lng', "
+                    "or a geocodable city/place/address string."
+                )
+            }), 400
+
+        timestamp_iso, tz_final = _now_in_timezone(tz_name_from_geo)
 
     record = {
         "timestamp": timestamp_iso,
-        "location": formatted_loc or data.get("location"),
+        "location": formatted_loc,
         "kc_id": kc_id,
         "student_id": student_id,
+        "learning_activity_id": learning_activity_id,
+        "learning_activity_title": learning_activity_title,
         "SOLO_level": SOLO_level,
         "student_response": student_response,
         "student_response_type": student_response_type,
@@ -599,7 +667,8 @@ def store_history():
         "lat": lat,
         "lng": lng,
         "timezone": tz_final,
-        "approved": True
+        "approved": True,
+        "location_required": location_required,
     }
 
     student_history.append(record)
@@ -609,16 +678,19 @@ def store_history():
         "stored": {
             "student_id": student_id,
             "kc_id": kc_id,
+            "learning_activity_id": learning_activity_id,
+            "learning_activity_title": learning_activity_title,
             "SOLO_level": SOLO_level,
             "approved": True,
             "timestamp": timestamp_iso,
             "timezone": tz_final,
-            "location": record["location"],
+            "location": formatted_loc,
             "lat": lat,
             "lng": lng,
             "student_response_type": student_response_type,
             "student_response_reference": student_response_reference,
-            "student_response_transcription": student_response_transcription
+            "student_response_transcription": student_response_transcription,
+            "location_required": location_required,
         }
     }), 200
 
